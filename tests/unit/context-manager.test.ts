@@ -27,7 +27,7 @@ test("getTokenLimit: detects gemini", () => {
 });
 
 test("getTokenLimit: uses GPT-5.5 Codex model context", () => {
-  assert.equal(getTokenLimit("codex", "gpt-5.5"), 1050000);
+  assert.equal(getTokenLimit("codex", "gpt-5.5"), 400000);
 });
 
 test("getTokenLimit: default fallback", () => {
@@ -120,6 +120,38 @@ test("compressContext: Layer 2 — compresses thinking in old messages", () => {
     const hasThinking = firstAssistant.content.some((b: any) => b.type === "thinking");
     assert.equal(hasThinking, false);
   }
+});
+
+test("compressContext: Layer 2 preserves prompt-format thinking tags in string content", () => {
+  const body = {
+    model: "test",
+    messages: [
+      { role: "user", content: "q1" },
+      {
+        role: "assistant",
+        content: "<thinking>visible prompt protocol</thinking><content>answer1</content>",
+      },
+      { role: "user", content: "q2" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "lots of structured thinking here ".repeat(500) },
+          { type: "text", text: "answer2" },
+        ],
+      },
+      { role: "user", content: "q3" },
+      { role: "assistant", content: "answer3" },
+    ],
+  };
+  const result = compressContext(body, { maxTokens: 2000, reserveTokens: 500 });
+  const firstAssistant = (result.body as any).messages.find(
+    (m: any) => m.role === "assistant" && typeof m.content === "string"
+  );
+
+  assert.equal(
+    firstAssistant.content,
+    "<thinking>visible prompt protocol</thinking><content>answer1</content>"
+  );
 });
 
 test("compressContext: Layer 3 — drops old messages to fit", () => {

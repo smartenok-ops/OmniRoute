@@ -13,6 +13,7 @@ import path from "path";
 import { ZipFile } from "yazl";
 import { getDbInstance, isCloud, isBuildPhase, DATA_DIR } from "../db/core";
 import { getLegacyDotDataDir, isSamePath } from "../dataPaths";
+import { getAppLogFilePath } from "../logEnv";
 import { protectPayloadForLog } from "../logPayloads";
 import { sanitizePII } from "../piiSanitizer";
 import { writeCallArtifact, type CallLogArtifact } from "./callLogArtifacts";
@@ -110,16 +111,44 @@ function ensureArchiveDir() {
   fs.mkdirSync(LOG_ARCHIVES_DIR, { recursive: true });
 }
 
-function listArchiveTargets(): ArchiveTarget[] {
+/**
+ * Directory the live file logger writes to (`buildLogger()` in
+ * `src/shared/utils/logger.ts`), so the legacy-log sweep below never zips-then-deletes
+ * a directory it does not own. Since PR #6234 (fix for #6197) the default app log path
+ * moved from a `process.cwd()`-anchored location to `DATA_DIR/logs/application/app.log`,
+ * landing it inside the same `DATA_DIR/logs` tree this "legacy" migration sweeps (#6799).
+ */
+function getLiveAppLogDir(): string | null {
+  try {
+    return path.dirname(getAppLogFilePath());
+  } catch {
+    return null;
+  }
+}
+
+function listRequestLogArchiveEntries(): ArchiveTarget[] {
+  if (!CURRENT_REQUEST_LOGS_DIR || !fs.existsSync(CURRENT_REQUEST_LOGS_DIR)) return [];
+
+  const liveAppLogDir = getLiveAppLogDir();
+  const entries = fs.readdirSync(CURRENT_REQUEST_LOGS_DIR);
   const targets: ArchiveTarget[] = [];
 
-  if (CURRENT_REQUEST_LOGS_DIR && fs.existsSync(CURRENT_REQUEST_LOGS_DIR)) {
+  for (const entry of entries) {
+    const entryPath = path.join(CURRENT_REQUEST_LOGS_DIR, entry);
+    if (liveAppLogDir && isSamePath(entryPath, liveAppLogDir)) continue;
+
     targets.push({
-      sourcePath: CURRENT_REQUEST_LOGS_DIR,
-      archiveRoot: "data/logs",
+      sourcePath: entryPath,
+      archiveRoot: path.posix.join("data/logs", entry),
       deleteAfterArchive: true,
     });
   }
+
+  return targets;
+}
+
+function listArchiveTargets(): ArchiveTarget[] {
+  const targets: ArchiveTarget[] = listRequestLogArchiveEntries();
 
   if (CURRENT_REQUEST_SUMMARY_FILE && fs.existsSync(CURRENT_REQUEST_SUMMARY_FILE)) {
     targets.push({
@@ -173,11 +202,27 @@ function createLegacyArchive(targets: ArchiveTarget[]): Promise<string> {
     const zipFile = new ZipFile();
     const output = fs.createWriteStream(archivePath);
 
-    output.on("close", () => resolve(archiveFilename));
-    output.on("error", (error) => {
+    let settled = false;
+    // yazl detects a stat->stream size mismatch (a file growing while being zipped, e.g.
+    // an actively-written log — #6401) by emitting "error" on the ZipFile instance itself,
+    // not on `output`. Left unwired, that "error" event has no listener and Node re-throws
+    // it as an uncaughtException that crashes the process. Wiring it here converts that
+    // crash into a normal rejection the caller's try/catch already handles.
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      output.destroy();
       fs.rmSync(archivePath, { force: true });
       reject(error);
+    };
+
+    output.on("close", () => {
+      if (settled) return;
+      settled = true;
+      resolve(archiveFilename);
     });
+    output.on("error", fail);
+    zipFile.on("error", fail);
     zipFile.outputStream.pipe(output);
 
     try {
@@ -186,9 +231,7 @@ function createLegacyArchive(targets: ArchiveTarget[]): Promise<string> {
       }
       zipFile.end();
     } catch (error) {
-      fs.rmSync(archivePath, { force: true });
-      zipFile.end();
-      reject(error);
+      fail(error as Error);
     }
   });
 }
@@ -267,10 +310,10 @@ export function migrateUsageJsonToSqlite() {
         const insert = db.prepare(`
           INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
             tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
-            status, success, latency_ms, ttft_ms, error_code, timestamp)
+            status, success, latency_ms, ttft_ms, error_code, combo_strategy, timestamp)
           VALUES (@provider, @model, @connectionId, @apiKeyId, @apiKeyName,
             @tokensInput, @tokensOutput, @tokensCacheRead, @tokensCacheCreation, @tokensReasoning,
-            @status, @success, @latencyMs, @ttftMs, @errorCode, @timestamp)
+            @status, @success, @latencyMs, @ttftMs, @errorCode, @comboStrategy, @timestamp)
         `);
 
         const tx = db.transaction(() => {
@@ -281,8 +324,10 @@ export function migrateUsageJsonToSqlite() {
               connectionId: entry.connectionId || null,
               apiKeyId: entry.apiKeyId || null,
               apiKeyName: entry.apiKeyName || null,
-              tokensInput: entry.tokens?.input ?? entry.tokens?.prompt_tokens ?? 0,
-              tokensOutput: entry.tokens?.output ?? entry.tokens?.completion_tokens ?? 0,
+              tokensInput:
+                entry.tokens?.input ?? entry.tokens?.prompt_tokens ?? entry.tokens?.in ?? 0,
+              tokensOutput:
+                entry.tokens?.output ?? entry.tokens?.completion_tokens ?? entry.tokens?.out ?? 0,
               tokensCacheRead: entry.tokens?.cacheRead ?? entry.tokens?.cached_tokens ?? 0,
               tokensCacheCreation:
                 entry.tokens?.cacheCreation ?? entry.tokens?.cache_creation_input_tokens ?? 0,
@@ -296,6 +341,7 @@ export function migrateUsageJsonToSqlite() {
                   ? Number(entry.latencyMs)
                   : 0,
               errorCode: entry.errorCode || null,
+              comboStrategy: entry.comboStrategy || entry.combo_strategy || "direct",
               timestamp: entry.timestamp || new Date().toISOString(),
             });
           }
@@ -358,7 +404,7 @@ export function migrateUsageJsonToSqlite() {
 
             if (detailExpected) {
               const artifact: CallLogArtifact = {
-                schemaVersion: 4,
+                schemaVersion: 5,
                 summary: {
                   id,
                   timestamp,

@@ -80,6 +80,59 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
+test("POST /api/combos persists names with spaces and square brackets", async () => {
+  const response = await createRoute.POST(
+    makeCreateRequest({
+      name: "Claude [1m]",
+      strategy: "priority",
+      models: [{ providerId: "claude", model: "claude-sonnet-4-6" }],
+    })
+  );
+  const body = (await response.json()) as any;
+  const stored = await combosDb.getComboByName("Claude [1m]");
+
+  assert.equal(response.status, 201);
+  assert.equal(body.name, "Claude [1m]");
+  assert.equal(stored?.name, "Claude [1m]");
+  assert.equal(stored?.models[0].model, "claude/claude-sonnet-4-6");
+});
+
+test("POST /api/combos rejects duplicate bracketed names", async () => {
+  await combosDb.createCombo({
+    name: "Claude [1m]",
+    models: [{ provider: "claude", model: "claude-sonnet-4-6" }],
+  });
+
+  const response = await createRoute.POST(
+    makeCreateRequest({
+      name: "Claude [1m]",
+      strategy: "priority",
+      models: [{ providerId: "claude", model: "claude-opus-4-6" }],
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "Combo name already exists");
+});
+
+test("PUT /api/combos can rename a combo to a bracketed name", async () => {
+  const combo = await combosDb.createCombo({
+    name: "claude-plain",
+    models: [{ provider: "claude", model: "claude-sonnet-4-6" }],
+  });
+
+  const response = await comboRoute.PUT(makeUpdateRequest({ name: "Claude [1m]" }), {
+    params: Promise.resolve({ id: combo.id }),
+  });
+  const body = (await response.json()) as any;
+  const stored = await combosDb.getComboByName("Claude [1m]");
+
+  assert.equal(response.status, 200);
+  assert.equal(body.name, "Claude [1m]");
+  assert.equal(stored?.id, combo.id);
+});
+
 test("POST /api/combos rejects composite tiers that point to unknown steps", async () => {
   const response = await createRoute.POST(
     makeCreateRequest({
@@ -101,13 +154,18 @@ test("POST /api/combos rejects composite tiers that point to unknown steps", asy
   assert.equal(response.status, 400);
   assert.deepEqual(body, {
     error: {
-      message: "Invalid composite tiers",
-      details: [
-        {
-          field: "config.compositeTiers.tiers.primary.stepId",
-          message: 'stepId "step-missing" does not exist in combo.models',
-        },
-      ],
+      code: "COMBO_003",
+      message: "Composite tier configuration is invalid",
+      category: "COMBO",
+      details: {
+        reason: "Invalid composite tiers",
+        details: [
+          {
+            field: "config.compositeTiers.tiers.primary.stepId",
+            message: 'stepId "step-missing" does not exist in combo.models',
+          },
+        ],
+      },
     },
   });
 });
@@ -169,13 +227,18 @@ test("PUT /api/combos rejects updates that orphan an existing composite tier ste
   assert.equal(response.status, 400);
   assert.deepEqual(body, {
     error: {
-      message: "Invalid composite tiers",
-      details: [
-        {
-          field: "config.compositeTiers.tiers.primary.stepId",
-          message: 'stepId "step-primary" does not exist in combo.models',
-        },
-      ],
+      code: "COMBO_003",
+      message: "Composite tier configuration is invalid",
+      category: "COMBO",
+      details: {
+        reason: "Invalid composite tiers",
+        details: [
+          {
+            field: "config.compositeTiers.tiers.primary.stepId",
+            message: 'stepId "step-primary" does not exist in combo.models',
+          },
+        ],
+      },
     },
   });
 });

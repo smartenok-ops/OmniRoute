@@ -6,8 +6,11 @@ import { initAuditLog, cleanupExpiredLogs, logAuditEvent } from "./lib/complianc
 import { initConsoleInterceptor } from "./lib/consoleInterceptor";
 import { startBudgetResetJob } from "./lib/jobs/budgetResetJob";
 import { startReasoningCacheCleanupJob } from "./lib/jobs/reasoningCacheCleanupJob";
+import { startCleanupScheduler } from "./lib/db/cleanup";
 import { getSettings } from "./lib/db/settings";
 import { applyRuntimeSettings } from "./lib/config/runtimeSettings";
+import { setSystemPromptConfig } from "@omniroute/open-sse/services/systemPrompt.ts";
+import { hydrateThinkingBudgetConfig } from "@omniroute/open-sse/services/thinkingBudget.ts";
 import { startRuntimeConfigHotReload } from "./lib/config/hotReload";
 import { startSpendBatchWriter } from "./lib/spend/batchWriter";
 import { registerDefaultGuardrails } from "./lib/guardrails";
@@ -43,7 +46,7 @@ async function startServer() {
 
   // Compliance: One-time cleanup of expired logs
   try {
-    const cleanup = cleanupExpiredLogs();
+    const cleanup = await cleanupExpiredLogs();
     if (
       cleanup.deletedUsage ||
       cleanup.deletedCallLogs ||
@@ -76,6 +79,22 @@ async function startServer() {
       );
     }
 
+    // Restore the Global System Prompt into the in-memory config. It lives in the
+    // `settings.systemPrompt` key but is NOT covered by applyRuntimeSettings, so without
+    // this the toggle/prompt revert to defaults on every restart (#2470).
+    if (settings.systemPrompt) {
+      setSystemPromptConfig(settings.systemPrompt);
+      startupLog.info("Global System Prompt restored from settings");
+    }
+
+    // Restore the proxy-level Thinking-Budget config (#5312). It lives in
+    // `settings.thinkingBudget` and is NOT covered by applyRuntimeSettings, so
+    // without this the dashboard mode (auto/custom/adaptive) silently reverts to
+    // the passthrough default on every restart.
+    if (hydrateThinkingBudgetConfig(settings)) {
+      startupLog.info("Thinking-Budget config restored from settings");
+    }
+
     // Initialize cloud sync
     startSpendBatchWriter();
     registerDefaultGuardrails();
@@ -83,9 +102,20 @@ async function startServer() {
     startupLog.info("Spend batch writer started");
     startupLog.info("Guardrail registry initialized");
     startupLog.info("Builtin skill handlers registered");
+
+    // Load active plugins on startup so they survive restarts
+    try {
+      const { pluginManager } = await import("./lib/plugins/manager");
+      await pluginManager.loadAll();
+      startupLog.info("Plugin manager loaded active plugins");
+    } catch (err) {
+      startupLog.warn({ err }, "Plugin manager loadAll failed (non-fatal)");
+    }
+
     await initializeCloudSync();
     startBudgetResetJob();
     startReasoningCacheCleanupJob();
+    startCleanupScheduler();
     startRuntimeConfigHotReload();
     startupLog.info("Server started with cloud sync initialized");
 
@@ -111,6 +141,15 @@ async function startServer() {
     } catch (err) {
       startupLog.warn({ error: getErrorMessage(err) }, "Pricing sync could not initialize");
     }
+  }
+
+  // Arena ELO sync: model intelligence from leaderboard data (non-blocking, never fatal).
+  // On by default; opt out with Dashboard Feature Flags or ARENA_ELO_SYNC_ENABLED=false.
+  try {
+    const { initArenaEloSync } = await import("./lib/arenaEloSync");
+    await initArenaEloSync();
+  } catch (err) {
+    startupLog.warn({ error: getErrorMessage(err) }, "Arena ELO sync could not initialize");
   }
 }
 

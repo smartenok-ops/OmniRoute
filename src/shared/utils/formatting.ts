@@ -5,6 +5,8 @@
  * Prevents copy-paste duplication and provides a single source of truth.
  */
 
+import { maskEmail } from "./maskEmail";
+
 /**
  * Format an ISO date string to a localized time string (HH:MM:SS).
  * @param {string} isoString - ISO 8601 date string
@@ -37,21 +39,6 @@ export function formatDuration(ms: number | null | undefined) {
 }
 
 /**
- * Format an ISO date to a full date+time string (pt-BR locale).
- * @param {string} iso - ISO 8601 date string
- * @returns {string}
- */
-export function formatDateTime(iso: string | null | undefined) {
-  try {
-    if (!iso) return "-";
-    const d = new Date(iso);
-    return d.toLocaleDateString("pt-BR") + ", " + d.toLocaleTimeString("en-US", { hour12: false });
-  } catch {
-    return iso;
-  }
-}
-
-/**
  * Mask a string by showing only start and end characters.
  * @param {string} value - Value to mask
  * @param {number} start - Number of characters to show at start (default: 2)
@@ -72,15 +59,25 @@ export function maskSegment(value: string | null | undefined, start = 2, end = 2
  */
 export function maskAccount(account: string | null | undefined, emailsVisible: boolean) {
   if (!account || account === "-") return "-";
+  if (emailsVisible) return account;
   const atIdx = account.indexOf("@");
   if (atIdx > 3) {
-    if (emailsVisible) return account;
-    return account.slice(0, 3) + "***" + account.slice(atIdx);
+    return maskEmail(account);
   }
   if (account.length > 8) {
     return account.slice(0, 5) + "***";
   }
   return account;
+}
+
+export function stableAccountSuffix(account: string | null | undefined): string {
+  if (!account || account === "-") return "0000";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < account.length; i++) {
+    hash ^= account.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0").slice(0, 4);
 }
 
 /**
@@ -97,16 +94,6 @@ export function formatApiKeyLabel(
   const displayName = apiKeyName || "key";
   if (!apiKeyId) return displayName;
   return `${displayName} (${maskSegment(apiKeyId, 4, 4)})`;
-}
-
-/**
- * Mask a sensitive key for log output.
- * @param {string} key - API key or token to mask
- * @returns {string}
- */
-export function maskKey(key: string | null | undefined) {
-  if (!key || key.length < 8) return "***";
-  return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
 /**
@@ -169,4 +156,28 @@ export function truncateUrl(url: string | null | undefined, max = 50) {
  */
 export function safePercentage(value: unknown): number | undefined {
   return typeof value === "number" && isFinite(value) ? value : undefined;
+}
+
+/**
+ * Format a reset countdown as a human-readable string: "2h 35m" or "4m 30s".
+ * Returns null if resetAt is in the past or not set.
+ *
+ * Lives here (client-safe utils) — not in db/providers/rateLimit — so client
+ * components can render a cooldown countdown without dragging the server-only
+ * DB barrel (better-sqlite3/ioredis → node:net) into the browser bundle.
+ * `rateLimit.ts` re-exports this for its server callers.
+ */
+export function formatResetCountdown(resetAt: string | number | null | undefined): string | null {
+  if (!resetAt) return null;
+  const resetTime = typeof resetAt === "number" ? resetAt : new Date(resetAt).getTime();
+  if (isNaN(resetTime)) return null;
+  const diffMs = resetTime - Date.now();
+  if (diffMs <= 0) return null;
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

@@ -1,23 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { buildComboTestRequestBody, extractComboTestResponseText } from "@/lib/combos/testHealth";
-import { getApiKeys, getComboByName, getCombos } from "@/lib/localDb";
+import { getComboByName, getCombos, pickApiKeyForInternalUse } from "@/lib/localDb";
 import { getRuntimePorts } from "@/lib/runtime/ports";
 import { resolveNestedComboTargets } from "@omniroute/open-sse/services/combo.ts";
 import { testComboSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
 async function getInternalApiKey(): Promise<string | null> {
-  try {
-    const keys = await getApiKeys();
-    const active = (
-      keys as Array<{ key: string; isActive?: boolean; revokedAt?: string | null }>
-    ).find((k) => k.key && k.isActive !== false && !k.revokedAt);
-    return active?.key ?? null;
-  } catch {
-    return null;
-  }
+  // Combo health-check probes hit /v1/chat/completions, which enforces
+  // per-key model allowlists (see shared/utils/apiKeyPolicy.ts). Picking
+  // an arbitrary active key is unsafe — see pickApiKeyForInternalUse.
+  return pickApiKeyForInternalUse("combo-health-check");
 }
 
 function buildComboTestResult(target, partial = {}) {
@@ -35,12 +31,25 @@ function buildComboTestResult(target, partial = {}) {
 async function testComboTarget(target, baseInternalUrl, internalApiKey: string | null) {
   const startTime = Date.now();
   try {
+    // Issue #2359: combo entries with a malformed/missing modelStr surfaced
+    // as `e.startsWith is not a function` / similar TypeError 500s. Coerce
+    // defensively at the boundary so the test path returns a clean error
+    // instead of crashing the request handler.
+    const modelStr = typeof target?.modelStr === "string" ? target.modelStr : "";
+    if (!modelStr) {
+      return buildComboTestResult(target, {
+        status: "error",
+        error: "Combo step is missing a model id (modelStr). Re-save the combo to refresh it.",
+        latencyMs: 0,
+      });
+    }
+    const modelLower = modelStr.toLowerCase();
     const isEmbedding =
-      target.modelStr.toLowerCase().includes("embedding") ||
-      target.modelStr.toLowerCase().includes("bge-") ||
-      target.modelStr.toLowerCase().includes("text-embed");
+      modelLower.includes("embedding") ||
+      modelLower.includes("bge-") ||
+      modelLower.includes("text-embed");
     const internalUrl = `${baseInternalUrl}/v1/${isEmbedding ? "embeddings" : "chat/completions"}`;
-    const testBody = buildComboTestRequestBody(target.modelStr, isEmbedding);
+    const testBody = buildComboTestRequestBody(modelStr, isEmbedding);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -107,7 +116,7 @@ async function testComboTarget(target, baseInternalUrl, internalApiKey: string |
     const latencyMs = Date.now() - startTime;
     return buildComboTestResult(target, {
       status: "error",
-      error: error.name === "AbortError" ? "Timeout (20s)" : error.message,
+      error: error.name === "AbortError" ? "Timeout (20s)" : sanitizeErrorMessage(error.message),
       latencyMs,
     });
   }

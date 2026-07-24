@@ -1,10 +1,12 @@
 import { CORS_HEADERS } from "@/shared/utils/cors";
 import { v1CountTokensSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
-import { estimateTokens } from "@/shared/utils/costEstimator";
+import { countTextTokens } from "@/shared/utils/tiktokenCounter";
 import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { getModelInfo } from "@/sse/services/model";
 import { extractApiKey, getProviderCredentials, isValidApiKey } from "@/sse/services/auth";
+import { safeResolveProxy } from "@/sse/handlers/chatHelpers";
 import * as log from "@/sse/utils/logger";
 
 /**
@@ -60,13 +62,18 @@ export async function POST(request) {
       return estimated;
     }
 
-    const executor = getExecutor(modelInfo.provider);
-    const counted = await executor?.countTokens?.({
-      model: modelInfo.model,
-      body,
-      credentials,
-      log,
-    });
+    const executor = await getExecutor(modelInfo.provider);
+    // The provider-side count is a real upstream call — it must honor the
+    // connection's proxy assignment exactly like chat execution does.
+    const proxyInfo = await safeResolveProxy(credentials.connectionId);
+    const counted = await runWithProxyContext(proxyInfo?.proxy || null, () =>
+      executor?.countTokens?.({
+        model: modelInfo.model,
+        body,
+        credentials,
+        log,
+      })
+    );
 
     if (!counted || !Number.isFinite(counted.input_tokens)) {
       return estimated;
@@ -92,33 +99,90 @@ export async function POST(request) {
   }
 }
 
+function safeStringify(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// Estimate tokens for a single Anthropic content block. Real agentic
+// conversations carry most of their tokens in `tool_use` inputs, `tool_result`
+// content, and `thinking` blocks — counting only `text` (as before) reported
+// near-zero for those messages and silently broke Claude Code's auto-compaction
+// (#2337). Image / redacted_thinking blocks are not text-estimable and count 0.
+function estimateContentBlockTokens(part) {
+  if (!part || typeof part !== "object") return 0;
+  let tokens = 0;
+  switch (part.type) {
+    case "text":
+      if (typeof part.text === "string") tokens += countTextTokens(part.text);
+      break;
+    case "tool_use":
+      if (typeof part.name === "string") tokens += countTextTokens(part.name);
+      if (part.input !== undefined) tokens += countTextTokens(safeStringify(part.input));
+      break;
+    case "tool_result":
+      tokens += estimateToolResultTokens(part.content);
+      break;
+    case "thinking":
+      if (typeof part.thinking === "string") tokens += countTextTokens(part.thinking);
+      break;
+    default:
+      break;
+  }
+  return tokens;
+}
+
+// A `tool_result` content can be a plain string or an array of nested blocks
+// (text / image). Count string content and nested text blocks.
+function estimateToolResultTokens(content) {
+  if (typeof content === "string") return countTextTokens(content);
+  if (Array.isArray(content)) {
+    let tokens = 0;
+    for (const block of content) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        tokens += countTextTokens(block.text);
+      }
+    }
+    return tokens;
+  }
+  return 0;
+}
+
 function buildEstimatedCountResponse(body) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
-  let totalChars = 0;
+  let inputTokens = 0;
 
   for (const msg of messages) {
     if (typeof msg?.content === "string") {
-      totalChars += msg.content.length;
+      inputTokens += countTextTokens(msg.content);
       continue;
     }
 
     if (Array.isArray(msg?.content)) {
       for (const part of msg.content) {
-        if (part?.type === "text" && typeof part.text === "string") {
-          totalChars += part.text.length;
-        }
+        inputTokens += estimateContentBlockTokens(part);
       }
     }
   }
 
   if (typeof body?.system === "string") {
-    totalChars += body.system.length;
+    inputTokens += countTextTokens(body.system);
+  } else if (Array.isArray(body?.system)) {
+    for (const block of body.system) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        inputTokens += countTextTokens(block.text);
+      }
+    }
   }
 
   return new Response(
     JSON.stringify({
-      input_tokens: totalChars > 0 ? Math.ceil(totalChars / 4) : estimateTokens(""),
-      source: "estimated",
+      input_tokens: inputTokens,
+      source: "local",
     }),
     {
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },

@@ -8,6 +8,7 @@ import {
   removeRedundantContent,
   replaceImageUrls,
 } from "../../../open-sse/services/compression/lite.ts";
+import { applyCompression } from "../../../open-sse/services/compression/strategySelector.ts";
 
 describe("collapseWhitespace", () => {
   it("collapses 3+ newlines to 2", () => {
@@ -166,6 +167,24 @@ describe("replaceImageUrls", () => {
     assert.equal(result.applied, false);
   });
 
+  // #3328: MiniMax M3 is multimodal (verified: it describes a base64 image via the
+  // opencode upstream). It must not be treated as a non-vision model, or compression
+  // strips the image and the model goes "blind".
+  it("keeps images for MiniMax M3 (incl. provider-prefixed / free ids)", () => {
+    const mkBody = () => ({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "data:image/png;base64,iVBOR" } }],
+        },
+      ],
+    });
+    for (const id of ["minimax-m3", "minimax-m3-free", "oc/minimax-m3-free"]) {
+      const result = replaceImageUrls(mkBody(), id);
+      assert.equal(result.applied, false, `expected images kept for ${id}`);
+    }
+  });
+
   it("skips non-image content", () => {
     const body = {
       messages: [{ role: "user", content: "just text" }],
@@ -190,6 +209,28 @@ describe("applyLiteCompression", () => {
     assert.ok(result.stats);
     assert.ok(result.stats.techniquesUsed.length >= 2);
     assert.ok(result.stats.savingsPercent > 0);
+  });
+
+  it("preserves system prompt text when preserveSystemPrompt is enabled", () => {
+    const body = {
+      messages: [
+        { role: "system", content: "Policy.   Keep exact.\n\n\nDo not change." },
+        { role: "user", content: "Please   normalize this.\n\n\nThanks." },
+      ],
+    };
+    const result = applyCompression(body, "lite", {
+      config: {
+        enabled: true,
+        defaultMode: "lite",
+        autoTriggerTokens: 0,
+        cacheMinutes: 5,
+        preserveSystemPrompt: true,
+        comboOverrides: {},
+      },
+    });
+    const messages = result.body.messages as typeof body.messages;
+    assert.equal(messages[0].content, body.messages[0].content);
+    assert.notEqual(messages[1].content, body.messages[1].content);
   });
 
   it("returns no compression for clean input", () => {

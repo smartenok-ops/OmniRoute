@@ -9,6 +9,84 @@
 
 import { generatePKCE, generateState } from "./utils/pkce";
 import { PROVIDERS } from "./providers/index";
+import { resolvePublicCred } from "@omniroute/open-sse/utils/publicCreds.ts";
+
+const GOOGLE_BROWSER_PROVIDERS = new Set(["antigravity", "agy"]);
+
+type OAuthRedirectEnv = Record<string, string | undefined>;
+
+function hasValue(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeBaseUrl(value: unknown): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "";
+  return trimmed.replace(/\/+$/, "");
+}
+
+function hasCustomGoogleOAuthCredentials(
+  providerName: string,
+  env: OAuthRedirectEnv | null | undefined = process.env
+): boolean {
+  if (providerName === "antigravity" || providerName === "agy") {
+    // `agy` reuses the antigravity OAuth client + env overrides.
+    const clientId = env?.ANTIGRAVITY_OAUTH_CLIENT_ID;
+    const clientSecret = env?.ANTIGRAVITY_OAUTH_CLIENT_SECRET;
+    return (
+      hasValue(clientId) &&
+      hasValue(clientSecret) &&
+      clientId !== resolvePublicCred("antigravity_id")
+    );
+  }
+
+  return false;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(hostname);
+}
+
+/**
+ * Google providers default to loopback redirects so the embedded public
+ * credentials keep working on out-of-the-box local installs. When operators
+ * provide their own Google OAuth client IDs for a remote deployment, prefer the
+ * public callback URL documented in .env.example / docs/README so the popup can
+ * navigate back to OmniRoute instead of stalling on localhost.
+ */
+export function resolveBrowserOAuthRedirectUri(
+  providerName: string,
+  redirectUri: string,
+  env: OAuthRedirectEnv | null | undefined = process.env
+): string {
+  if (!GOOGLE_BROWSER_PROVIDERS.has(providerName)) {
+    return redirectUri;
+  }
+
+  if (!hasCustomGoogleOAuthCredentials(providerName, env)) {
+    return redirectUri;
+  }
+
+  const publicBaseUrl =
+    normalizeBaseUrl(env.NEXT_PUBLIC_BASE_URL) || normalizeBaseUrl(env.OMNIROUTE_PUBLIC_BASE_URL);
+
+  if (!publicBaseUrl) {
+    return redirectUri;
+  }
+
+  try {
+    const requested = new URL(redirectUri);
+    if (!isLoopbackHostname(requested.hostname)) {
+      return redirectUri;
+    }
+
+    const callbackPath =
+      requested.pathname && requested.pathname !== "/" ? requested.pathname : "/callback";
+    return `${publicBaseUrl}${callbackPath}${requested.search}`;
+  } catch {
+    return redirectUri;
+  }
+}
 
 /**
  * Get provider handler
@@ -22,18 +100,46 @@ export function getProvider(name) {
 }
 
 /**
- * Get all provider names
- */
-export function getProviderNames() {
-  return Object.keys(PROVIDERS);
-}
-
-/**
- * Generate auth data for a provider
+ * Generate auth data for a provider.
+ *
+ * Returns `{ supported: false, error }` (no `authUrl`) for providers whose
+ * browser-OAuth flow is currently disabled — e.g. windsurf / devin-cli post
+ * 2026-05 rebrand, where the legacy PKCE endpoint at app.devin.ai returns 404.
+ * Callers (UI / API route) should surface the `error` string and route the
+ * user to the import-token flow instead.
  */
 export function generateAuthData(providerName, redirectUri) {
   const provider = getProvider(providerName);
-  const { codeVerifier, codeChallenge, state } = generatePKCE();
+  const pkce = generatePKCE();
+  let codeVerifier = pkce.codeVerifier;
+  const { codeChallenge, state } = pkce;
+
+  if (provider.flowType === "import_token") {
+    let error: string;
+    if (providerName === "windsurf" || providerName === "devin-cli") {
+      error =
+        "Browser login disabled — paste token from https://windsurf.com/show-auth-token instead. Phase 2 will restore Firebase OAuth via app.devin.ai successor.";
+    } else if (providerName === "zed") {
+      error =
+        "Zed does not use a browser OAuth flow. Use the Zed provider page to import credentials " +
+        "directly from the OS keychain (POST /api/providers/zed/import), or paste a token manually " +
+        "via POST /api/providers/zed/manual-import for Docker environments.";
+    } else {
+      error = `Browser login is disabled for ${providerName}. Use the import-token flow instead.`;
+    }
+    return {
+      authUrl: undefined,
+      state: undefined,
+      codeVerifier: undefined,
+      codeChallenge: undefined,
+      redirectUri,
+      flowType: provider.flowType,
+      fixedPort: provider.fixedPort,
+      callbackPath: provider.callbackPath || "/callback",
+      supported: false,
+      error,
+    };
+  }
 
   let authUrl;
   if (provider.flowType === "device_code") {
@@ -41,7 +147,24 @@ export function generateAuthData(providerName, redirectUri) {
   } else if (provider.flowType === "authorization_code_pkce") {
     authUrl = provider.buildAuthUrl(provider.config, redirectUri, state, codeChallenge);
   } else {
-    authUrl = provider.buildAuthUrl(provider.config, redirectUri, state);
+    const built = provider.buildAuthUrl(provider.config, redirectUri, state);
+    // Some non-PKCE "authorization_code" providers (e.g. zed-hosted) need to
+    // override the auto-generated PKCE codeVerifier/redirectUri with their own
+    // provider-specific verifier (e.g. an RSA private-key verifier) instead of
+    // an unused PKCE code_verifier — they return an object instead of a bare
+    // authUrl string. Existing providers all return a plain string, so this is
+    // backward compatible.
+    if (built && typeof built === "object" && typeof built.authUrl === "string") {
+      authUrl = built.authUrl;
+      if (typeof built.codeVerifier === "string" && built.codeVerifier) {
+        codeVerifier = built.codeVerifier;
+      }
+      if (typeof built.redirectUri === "string" && built.redirectUri) {
+        redirectUri = built.redirectUri;
+      }
+    } else {
+      authUrl = built;
+    }
   }
 
   return {
@@ -69,6 +192,23 @@ export async function exchangeTokens(providerName, code, redirectUri, codeVerifi
     codeVerifier,
     state
   );
+
+  let extra = null;
+  if (provider.postExchange) {
+    extra = await provider.postExchange(tokens);
+  }
+
+  return provider.mapTokens(tokens, extra);
+}
+
+/**
+ * Finalize tokens obtained out-of-band (e.g. the browser-driven Codex device
+ * flow, where the browser performs the auth.openai.com exchange because the
+ * server's datacenter IP is blocked). Runs the provider's postExchange +
+ * mapTokens — the same tail as exchangeTokens — without an HTTP token exchange.
+ */
+export async function finalizeTokens(providerName, tokens) {
+  const provider = getProvider(providerName);
 
   let extra = null;
   if (provider.postExchange) {

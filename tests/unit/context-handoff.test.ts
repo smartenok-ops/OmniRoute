@@ -46,7 +46,7 @@ test("buildHandoffSystemMessage and injectHandoffIntoBody preserve existing hist
     taskProgress: "Need to finish tests",
     activeEntities: ["combo.ts", "chat.ts"],
     messageCount: 42,
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     warningThresholdPct: 0.85,
     generatedAt: "2099-04-08T12:00:00.000Z",
     expiresAt: "2099-04-08T17:00:00.000Z",
@@ -79,7 +79,7 @@ test("injectHandoffIntoBody preserves Responses API shape for native Codex reque
     taskProgress: "Need to carry state across account switches",
     activeEntities: ["chat.ts", "contextHandoff.ts"],
     messageCount: 8,
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     warningThresholdPct: 0.85,
     generatedAt: "2099-04-08T12:00:00.000Z",
     expiresAt: "2099-04-08T17:00:00.000Z",
@@ -139,7 +139,7 @@ test("maybeGenerateHandoff skips below the warning threshold", async () => {
     connectionId: "conn-low",
     percentUsed: 0.7,
     messages: [{ role: "user", content: "hello" }],
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     expiresAt: null,
     handleSingleModel: async () => {
       called = true;
@@ -164,7 +164,7 @@ test("maybeGenerateHandoff persists a structured handoff once the threshold is r
       { role: "user", content: "Please continue wiring the combo" },
       { role: "assistant", content: "Working on it" },
     ],
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     expiresAt: "2099-04-08T17:00:00.000Z",
     handleSingleModel: async (body, modelStr) => {
       calls.push({ body, modelStr });
@@ -197,7 +197,7 @@ test("maybeGenerateHandoff persists a structured handoff once the threshold is r
   assert.equal(saved.summary, "Relay summary generated");
   assert.deepEqual(saved.keyDecisions, ["Use context-relay"]);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].modelStr, "codex/gpt-5.4");
+  assert.equal(calls[0].modelStr, "codex/gpt-5.6-sol");
   assert.equal(calls[0].body._omnirouteSkipContextRelay, true);
   assert.equal(calls[0].body._omnirouteInternalRequest, "context-handoff");
 });
@@ -215,7 +215,7 @@ test("maybeGenerateHandoff deduplicates concurrent in-flight generations for the
     connectionId: "conn-dedupe",
     percentUsed: 0.89,
     messages: [{ role: "user", content: "Generate once" }],
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     expiresAt: "2099-01-01T00:00:00.000Z",
     handleSingleModel: async () => {
       calls.push("summary");
@@ -265,7 +265,7 @@ test("maybeGenerateHandoff allows a new attempt after a failed in-flight generat
     connectionId: "conn-retry",
     percentUsed: 0.9,
     messages: [{ role: "user", content: "Retry after failure" }],
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     expiresAt: "2099-01-01T00:00:00.000Z",
     handleSingleModel: async () => {
       calls += 1;
@@ -316,7 +316,7 @@ test("maybeGenerateHandoff respects explicit empty handoffProviders and skips ge
     connectionId: "conn-disabled",
     percentUsed: 0.92,
     messages: [{ role: "user", content: "Do not generate" }],
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     expiresAt: null,
     config: { handoffProviders: [] },
     handleSingleModel: async () => {
@@ -340,7 +340,7 @@ test("context handoff DB module upserts and deletes active handoffs", () => {
     taskProgress: "step one",
     activeEntities: ["a.ts"],
     messageCount: 3,
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     warningThresholdPct: 0.85,
     generatedAt: "2099-04-08T10:00:00.000Z",
     expiresAt: "2099-01-01T00:00:00.000Z",
@@ -354,7 +354,7 @@ test("context handoff DB module upserts and deletes active handoffs", () => {
     taskProgress: "step two",
     activeEntities: ["b.ts"],
     messageCount: 4,
-    model: "codex/gpt-5.4",
+    model: "codex/gpt-5.6-sol",
     warningThresholdPct: 0.86,
     generatedAt: "2099-04-08T11:00:00.000Z",
     expiresAt: "2099-01-01T00:00:00.000Z",
@@ -367,4 +367,56 @@ test("context handoff DB module upserts and deletes active handoffs", () => {
 
   handoffDb.deleteHandoff("sess-db", "relay-combo");
   assert.equal(handoffDb.getHandoff("sess-db", "relay-combo"), null);
+});
+
+test("selectMessagesForSummary filters falsy values and preserves system/developer messages", () => {
+  const messages: (contextHandoff.MessageLike | null | undefined | false)[] = [
+    null,
+    undefined,
+    { role: "system", content: "System 1" },
+    false,
+    { role: "user", content: "User 1" },
+    { role: "developer", content: "Dev 1" },
+    { role: "assistant", content: "Assistant 1" },
+    { role: "user", content: "User 2" },
+  ];
+
+  const selected = contextHandoff.selectMessagesForSummary(
+    messages as contextHandoff.MessageLike[],
+    2
+  );
+
+  assert.equal(selected.length, 4);
+  assert.equal(selected[0].role, "system");
+  assert.equal(selected[1].role, "developer");
+  assert.equal(selected[2].role, "assistant");
+  assert.equal(selected[3].role, "user");
+  assert.equal(selected[3].content, "User 2");
+});
+
+test("selectMessagesForSummary with no system messages and oversized single remaining message still produces non-empty selection", () => {
+  // Build a single very large non-system message that exceeds MAX_HISTORY_TOKENS_FOR_SUMMARY
+  // (token estimator is ~4 chars/token, so 8000 tokens ≈ 32000 chars).
+  const hugeContent = "x".repeat(40000);
+  const messages: contextHandoff.MessageLike[] = [
+    { role: "user", content: "first message" },
+    { role: "assistant", content: hugeContent },
+  ];
+
+  const selected = contextHandoff.selectMessagesForSummary(messages, 10);
+
+  // The function must return at least one message rather than [] so the handoff is not silently dropped.
+  assert.ok(selected.length > 0, "expected at least one message to be selected");
+
+  // formatMessagesForPrompt on the result must produce a non-empty string
+  // (guards the regression: previously returned [] → empty historyText → handoff skipped).
+  const historyText = selected
+    .map((m, i) => {
+      const role = typeof m.role === "string" ? m.role : "unknown";
+      const content = typeof m.content === "string" ? m.content.trim() : "";
+      return content ? `[${i + 1}] ${role.toUpperCase()}:\n${content}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  assert.ok(historyText.length > 0, "historyText must be non-empty so the handoff is generated");
 });

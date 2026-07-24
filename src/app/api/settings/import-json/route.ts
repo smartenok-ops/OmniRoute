@@ -3,11 +3,14 @@ import { getDbInstance } from "@/lib/db/core";
 import { backupDbFile } from "@/lib/db/backup";
 import { isAuthRequired, isAuthenticated } from "@/shared/utils/apiAuth";
 import { runJsonMigration, type LegacyJsonData } from "@/lib/db/jsonMigration";
+import { getSettings } from "@/lib/db/settings";
+import { setSystemPromptConfig } from "@omniroute/open-sse/services/systemPrompt.ts";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
 /**
  * POST /api/settings/import-json
  *
- * Imports a legacy 9router / OmniRoute JSON backup into the current SQLite
+ * Imports a legacy OmniRoute JSON backup into the current SQLite
  * database.  Accepts either multipart/form-data (file field) or a raw JSON body.
  *
  * 🔒 Auth-guarded.
@@ -65,9 +68,18 @@ export async function POST(request: Request) {
     // Delegate the actual migration to the shared helper (avoids duplication with core.ts)
     const counts = runJsonMigration(db, data);
 
+    // Re-hydrate the in-memory Global System Prompt config — the migration writes it to
+    // the DB but the in-memory state would stay stale until a restart otherwise (#2470).
+    const importedSettings = await getSettings();
+    if (importedSettings.systemPrompt) {
+      setSystemPromptConfig(importedSettings.systemPrompt);
+    }
+
     console.log(
       `[JSON Import] Imported ${counts.connections} connections, ${counts.nodes} nodes, ` +
-        `${counts.combos} combos, ${counts.apiKeys} API keys`
+        `${counts.combos} combos, ${counts.apiKeys} API keys, ` +
+        `${counts.usageHistory} usage rows, ${counts.domainCostHistory} cost rows, ` +
+        `${counts.domainBudgets} budgets`
     );
 
     return NextResponse.json({
@@ -77,6 +89,9 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     console.error("[API] Error importing JSON backup:", err);
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    return NextResponse.json(
+      { error: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)) },
+      { status: 500 }
+    );
   }
 }

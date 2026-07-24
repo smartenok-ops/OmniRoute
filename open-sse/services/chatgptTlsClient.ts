@@ -14,21 +14,25 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtemp, open, unlink, rmdir, stat } from "node:fs/promises";
+import { mkdtemp, open, unlink, rmdir, stat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 let clientPromise: Promise<unknown> | null = null;
 let exitHookInstalled = false;
 
-const CHATGPT_PROFILE = "firefox_148"; // matches the Firefox 150 UA we send
-const DEFAULT_TIMEOUT_MS = 60_000;
+const CHATGPT_PROFILE = "firefox_148"; // matches the Firefox 148 UA we send
+const DEFAULT_TIMEOUT_MS =
+  Number.parseInt(process.env.OMNIROUTE_CHATGPT_TLS_TIMEOUT_MS || "", 10) || 60_000;
 // Grace period added to the binding's wire-level timeout before our JS-level
 // hard timeout fires. Under healthy operation `tls-client-node` honors
 // `timeoutMilliseconds` and rejects on its own; the JS-level race only wins
 // when the koffi-loaded native library is wedged (which the binding's own
 // timer can't escape). Keep the grace small so users don't wait noticeably
 // longer than the configured timeout when the binding is dead.
-const HARD_TIMEOUT_GRACE_MS = 10_000;
+const HARD_TIMEOUT_GRACE_MS =
+  Number.parseInt(process.env.OMNIROUTE_CHATGPT_TLS_GRACE_MS || "", 10) || 10_000;
+const STREAM_FIRST_BYTE_TIMEOUT_MS =
+  Number.parseInt(process.env.OMNIROUTE_CHATGPT_STREAM_FIRST_BYTE_TIMEOUT_MS || "", 10) || 30_000;
 
 function installExitHook(): void {
   if (exitHookInstalled) return;
@@ -188,6 +192,41 @@ export interface TlsFetchOptions {
    * mangled. Default false (text mode).
    */
   byteResponse?: boolean;
+  /**
+   * Optional upstream proxy URL (`http://user:pass@host:port` or
+   * `socks5://...`). When set, the request is tunneled through this proxy
+   * before reaching chatgpt.com. Required for hosts whose bare IP is
+   * flagged by ChatGPT/Cloudflare (Russia, datacenter ranges, etc.) —
+   * without it, every call leaks the host IP and gets edge-rejected with
+   * a templated 401 / `Invalid session cookie`.
+   *
+   * Resolution order:
+   *   1. `options.proxyUrl` (per-call override from caller)
+   *   2. `process.env.OMNIROUTE_TLS_PROXY_URL` (single-flag opt-in)
+   *   3. `process.env.HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (POSIX-standard fallback)
+   *
+   * The native `tls-client-node` binding does **not** consult Go's
+   * `http.ProxyFromEnvironment`, so the env vars need to be plumbed in
+   * here at the JS layer. The dashboard's global-fetch monkey-patch only
+   * reaches Node's undici, not the koffi-loaded shared library used here.
+   */
+  proxyUrl?: string;
+}
+
+import { resolveProxyForRequest } from "../utils/proxyFetch.ts";
+import { resolveTlsClientProxyUrl } from "./tlsClientProxy.ts";
+
+/**
+ * Resolve the proxy URL for a tls-client request. Per-call value wins;
+ * otherwise we use the standard proxy fetch resolution which reads from
+ * the dashboard AsyncLocalStorage context or falls back to env vars.
+ *
+ * Fail-closed: if resolution throws (e.g. a configured socks5 proxy with
+ * ENABLE_SOCKS5_PROXY=false), this rethrows rather than returning undefined —
+ * undefined would let the native binding connect directly and leak the real IP.
+ */
+function resolveProxyUrl(perCall: string | undefined): string | undefined {
+  return resolveTlsClientProxyUrl("https://chatgpt.com", perCall, resolveProxyForRequest);
 }
 
 export interface TlsFetchResult {
@@ -240,6 +279,13 @@ export async function tlsFetchChatGpt(
     followRedirects: true,
     withRandomTLSExtensionOrder: true,
     isByteResponse: options.byteResponse === true,
+    // Plumb the configured proxy through to the native binding. tls-client-node
+    // consults `proxyUrl` in the per-call options (it does NOT auto-pick up
+    // HTTP_PROXY / HTTPS_PROXY env), so callers / env have to be threaded in
+    // explicitly. See `resolveProxyUrl()` for the lookup order. Without this
+    // line, every chatgpt-web call egresses with the bare host IP regardless
+    // of dashboard proxy config — see #2022.
+    proxyUrl: resolveProxyUrl(options.proxyUrl),
   };
 
   if (options.stream) {
@@ -249,7 +295,8 @@ export async function tlsFetchChatGpt(
       requestOptions,
       options.streamEofSymbol,
       options.signal ?? null,
-      (options.timeoutMs ?? DEFAULT_TIMEOUT_MS) + HARD_TIMEOUT_GRACE_MS
+      (options.timeoutMs ?? DEFAULT_TIMEOUT_MS) + HARD_TIMEOUT_GRACE_MS,
+      STREAM_FIRST_BYTE_TIMEOUT_MS
     );
   }
 
@@ -306,7 +353,8 @@ async function tlsFetchStreaming(
   requestOptions: Record<string, unknown>,
   eofSymbol = "[DONE]",
   signal: AbortSignal | null = null,
-  hardTimeoutMs: number = DEFAULT_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS
+  hardTimeoutMs: number = DEFAULT_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS,
+  firstByteTimeoutMs: number = STREAM_FIRST_BYTE_TIMEOUT_MS
 ): Promise<TlsFetchResult> {
   const dir = await mkdtemp(join(tmpdir(), "cgpt-stream-"));
   const path = join(dir, `${randomUUID()}.sse`);
@@ -348,16 +396,21 @@ async function tlsFetchStreaming(
   // that race; if the request actually fails before producing any bytes,
   // the timeout falls through to the requestPromise drain below (returning
   // the real upstream status).
-  const ready = await waitForContent(path, 5_000, requestPromise);
+  const ready = await waitForContent(path, firstByteTimeoutMs, requestPromise);
   if (!ready) {
     const r = await requestPromise.catch(
       (e) => ({ status: 502, headers: {}, body: String(e) }) as TlsResponseLike
     );
+    // If the first byte arrived after our first-byte wait but before the
+    // request settled, tls-client-node may have written the full SSE body to
+    // streamOutputPath while leaving r.body empty. Prefer those captured bytes
+    // over misclassifying a successful delayed stream as "empty response body".
+    const fileText = await readTextFileIfExists(path);
     await cleanupTempPath(path);
     return {
       status: r.status,
       headers: toHeaders(r.headers),
-      text: r.body,
+      text: fileText || r.body,
       body: null,
     };
   }
@@ -373,11 +426,12 @@ async function tlsFetchStreaming(
     const r = await requestPromise.catch(
       (e) => ({ status: 502, headers: {}, body: String(e) }) as TlsResponseLike
     );
+    const fileText = await readTextFileIfExists(path);
     await cleanupTempPath(path);
     return {
       status: r.status,
       headers: toHeaders(r.headers),
-      text: r.body,
+      text: r.body || fileText,
       body: null,
     };
   }
@@ -411,6 +465,34 @@ async function cleanupTempPath(path: string): Promise<void> {
   await unlink(path).catch(() => {});
   const dir = path.substring(0, path.lastIndexOf("/"));
   await rmdir(dir).catch(() => {});
+}
+
+async function readTextFileIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+export async function __tlsFetchStreamingForTesting(
+  client: { request: (url: string, opts: Record<string, unknown>) => Promise<unknown> },
+  url: string,
+  requestOptions: Record<string, unknown>,
+  eofSymbol = "[DONE]",
+  signal: AbortSignal | null = null,
+  hardTimeoutMs: number = DEFAULT_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS,
+  firstByteTimeoutMs: number = STREAM_FIRST_BYTE_TIMEOUT_MS
+): Promise<TlsFetchResult> {
+  return tlsFetchStreaming(
+    client as { request: (url: string, opts: Record<string, unknown>) => Promise<TlsResponseLike> },
+    url,
+    requestOptions,
+    eofSymbol,
+    signal,
+    hardTimeoutMs,
+    firstByteTimeoutMs
+  );
 }
 
 async function readFirstBytes(path: string, n: number): Promise<string> {

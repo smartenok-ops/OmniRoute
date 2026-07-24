@@ -4,11 +4,23 @@ import {
   addCustomModel,
   removeCustomModel,
   replaceCustomModels,
+  deleteSyncedAvailableModelsForProvider,
+  removeSyncedAvailableModel,
   updateCustomModel,
   getModelCompatOverrides,
   mergeModelCompatOverride,
   type ModelCompatPatch,
 } from "@/lib/localDb";
+import {
+  getModelContextOverrideRecord,
+  setModelContextOverride,
+  removeModelContextOverride,
+} from "@/lib/db/modelContextOverrides";
+import {
+  deleteManagedAvailableModelAliases,
+  deleteManagedAvailableModelAliasesForProvider,
+  syncManagedAvailableModelAliases,
+} from "@/lib/providerModels/managedAvailableModels";
 import {
   AI_PROVIDERS,
   isOpenAICompatibleProvider,
@@ -52,8 +64,24 @@ export async function GET(request) {
 
     const models = provider ? await getCustomModels(provider) : await getAllCustomModels();
     const modelCompatOverrides = provider ? getModelCompatOverrides(provider) : [];
+    // #4125: surface the manual/auto context-window override (Feature 5004 table) on
+    // each custom-model row so the UI can show/edit it without a second round trip.
+    const modelsWithContextOverride =
+      provider && Array.isArray(models)
+        ? models.map((model: Record<string, unknown>) => {
+            const modelId = typeof model?.id === "string" ? model.id : null;
+            const record = modelId ? getModelContextOverrideRecord(provider, modelId) : null;
+            return record
+              ? {
+                  ...model,
+                  contextWindowOverride: record.realContext,
+                  contextWindowOverrideSource: record.source,
+                }
+              : model;
+          })
+        : models;
 
-    return Response.json({ models, modelCompatOverrides });
+    return Response.json({ models: modelsWithContextOverride, modelCompatOverrides });
   } catch {
     return Response.json(
       { error: { message: "Failed to fetch provider models", type: "server_error" } },
@@ -90,7 +118,18 @@ export async function POST(request) {
     if (isValidationFailure(validation)) {
       return Response.json({ error: validation.error }, { status: 400 });
     }
-    const { provider, modelId, modelName, source, apiFormat, supportedEndpoints } = validation.data;
+    const {
+      provider,
+      modelId,
+      modelName,
+      source,
+      apiFormat,
+      supportedEndpoints,
+      targetFormat,
+      // #1294: persist the per-model token limits set in the add-model form.
+      max_input_tokens: maxInputTokens,
+      max_output_tokens: maxOutputTokens,
+    } = validation.data;
 
     const model = await addCustomModel(
       provider,
@@ -98,7 +137,12 @@ export async function POST(request) {
       modelName,
       source || "manual",
       apiFormat,
-      supportedEndpoints
+      supportedEndpoints,
+      targetFormat,
+      {
+        ...(maxInputTokens != null ? { inputTokenLimit: maxInputTokens } : {}),
+        ...(maxOutputTokens != null ? { outputTokenLimit: maxOutputTokens } : {}),
+      }
     );
     return Response.json({ model });
   } catch (error) {
@@ -144,10 +188,12 @@ export async function PUT(request) {
       modelName,
       apiFormat,
       supportedEndpoints,
+      targetFormat,
       normalizeToolCallId,
       preserveOpenAIDeveloperRole,
       upstreamHeaders,
       compatByProtocol,
+      contextWindowOverride,
     } = validation.data;
 
     const raw = rawBody as Record<string, unknown>;
@@ -155,12 +201,27 @@ export async function PUT(request) {
     if ("modelName" in raw) updates.modelName = modelName;
     if ("apiFormat" in raw) updates.apiFormat = apiFormat;
     if ("supportedEndpoints" in raw) updates.supportedEndpoints = supportedEndpoints;
+    if ("targetFormat" in raw) updates.targetFormat = targetFormat;
     if ("normalizeToolCallId" in raw) updates.normalizeToolCallId = normalizeToolCallId;
     if ("preserveOpenAIDeveloperRole" in raw)
       updates.preserveOpenAIDeveloperRole = preserveOpenAIDeveloperRole;
     if ("upstreamHeaders" in raw) updates.upstreamHeaders = upstreamHeaders;
     if ("compatByProtocol" in raw && compatByProtocol !== undefined) {
       updates.compatByProtocol = compatByProtocol;
+    }
+
+    // #4125: manual context-window override — persisted in the Feature-5004
+    // `model_context_overrides` table (source="manual"), independent of the
+    // customModels JSON row, so it applies whether or not other fields changed.
+    let contextWindowOverrideResult: number | null | undefined;
+    if ("contextWindowOverride" in raw) {
+      if (contextWindowOverride == null) {
+        removeModelContextOverride(provider, modelId);
+        contextWindowOverrideResult = null;
+      } else {
+        setModelContextOverride(provider, modelId, contextWindowOverride, "manual");
+        contextWindowOverrideResult = contextWindowOverride;
+      }
     }
 
     const model = await updateCustomModel(provider, modelId, updates);
@@ -177,12 +238,14 @@ export async function PUT(request) {
             "preserveOpenAIDeveloperRole",
             "upstreamHeaders",
             "compatByProtocol",
+            "contextWindowOverride",
           ].includes(k)
         ) &&
         ("normalizeToolCallId" in raw ||
           "preserveOpenAIDeveloperRole" in raw ||
           "upstreamHeaders" in raw ||
-          "compatByProtocol" in raw);
+          "compatByProtocol" in raw ||
+          "contextWindowOverride" in raw);
       if (compatOnly) {
         const knownProvider =
           !!provider &&
@@ -223,6 +286,9 @@ export async function PUT(request) {
         return Response.json({
           ok: true,
           modelCompatOverrides: getModelCompatOverrides(provider),
+          ...(contextWindowOverrideResult !== undefined
+            ? { contextWindowOverride: contextWindowOverrideResult }
+            : {}),
         });
       }
       return Response.json(
@@ -231,7 +297,12 @@ export async function PUT(request) {
       );
     }
 
-    return Response.json({ model });
+    return Response.json({
+      model,
+      ...(contextWindowOverrideResult !== undefined
+        ? { contextWindowOverride: contextWindowOverrideResult }
+        : {}),
+    });
   } catch (error) {
     console.error("Error updating provider model:", error);
     return Response.json(
@@ -305,9 +376,20 @@ export async function PATCH(request) {
       }
     }
 
+    const aliasChanges =
+      body.isHidden === true
+        ? { removed: await deleteManagedAvailableModelAliases(provider, modelIds), assigned: [] }
+        : {
+            removed: [],
+            assigned: (
+              await syncManagedAvailableModelAliases(provider, modelIds, { pruneMissing: false })
+            ).assignedAliases,
+          };
+
     return Response.json({
       ok: true,
       updated: modelIds.length,
+      aliasChanges,
       models: await getCustomModels(provider),
       modelCompatOverrides: getModelCompatOverrides(provider),
     });
@@ -353,7 +435,14 @@ export async function DELETE(request) {
     const all = searchParams.get("all");
     if (all === "true") {
       await replaceCustomModels(provider, [], { allowEmpty: true });
-      return Response.json({ cleared: true });
+      const syncedAvailableModelListsRemoved =
+        await deleteSyncedAvailableModelsForProvider(provider);
+      const removedAliases = await deleteManagedAvailableModelAliasesForProvider(provider);
+      return Response.json({
+        cleared: true,
+        syncedAvailableModelListsRemoved,
+        aliasChanges: { removed: removedAliases, assigned: [] },
+      });
     }
 
     if (!modelId) {
@@ -368,8 +457,20 @@ export async function DELETE(request) {
       );
     }
 
-    const removed = await removeCustomModel(provider, modelId);
-    return Response.json({ removed });
+    const removedCustom = await removeCustomModel(provider, modelId);
+    const removedSynced = await removeSyncedAvailableModel(provider, modelId);
+    if (removedSynced) {
+      // #3199 + #3782: mark the deleted synced model with the DISTINCT `isDeleted`
+      // marker so a later auto-fetch re-import does not re-add it. We also keep
+      // `isHidden:true` so existing UI/visibility behavior is unchanged. The sync
+      // filter keys on `isDeleted` (not `isHidden`), which is what lets an
+      // eye/visibility-hidden model (`isHidden` only) survive a re-sync while a
+      // deleted one stays dropped.
+      mergeModelCompatOverride(provider, modelId, { isDeleted: true, isHidden: true });
+    }
+    const removed = removedCustom || removedSynced;
+    const removedAliases = await deleteManagedAvailableModelAliases(provider, [modelId]);
+    return Response.json({ removed, aliasChanges: { removed: removedAliases, assigned: [] } });
   } catch (error) {
     console.error("Error removing provider model:", error);
     return Response.json(

@@ -6,6 +6,21 @@ import assert from "node:assert/strict";
 
 const { PerplexityWebExecutor } = await import("../../open-sse/executors/perplexity-web.ts");
 const { getExecutor, hasSpecializedExecutor } = await import("../../open-sse/executors/index.ts");
+const { __setTlsFetchOverrideForTesting, TlsClientUnavailableError } =
+  await import("../../open-sse/services/perplexityTlsClient.ts");
+
+// #2459: the executor now routes through tlsFetchPerplexity (Firefox TLS) instead of
+// global fetch. Install one persistent bridge so the tests below can keep stubbing
+// globalThis.fetch (returning a Response) and have it surface as a TlsFetchResult.
+__setTlsFetchOverrideForTesting(async (url, opts) => {
+  const res = await (globalThis.fetch as any)(url, opts);
+  return {
+    status: res.status,
+    headers: res.headers,
+    text: res.status === 200 ? null : await res.text(),
+    body: res.status === 200 ? res.body : null,
+  };
+});
 
 // ─── Helper: Build a mock SSE stream from Perplexity events ─────────────────
 
@@ -25,14 +40,22 @@ function mockPplxStream(events) {
   });
 }
 
-// ─── Helper: Override global fetch for testing ──────────────────────────────
+// ─── Helper: stub globalThis.fetch for testing ──────────────────────────────
+// The persistent bridge above forwards tlsFetchPerplexity calls to globalThis.fetch,
+// so stubbing fetch is still the way to mock Perplexity's upstream response.
 
-function mockFetch(status, streamEvents) {
+function mockFetch(status, streamEvents, bodyText) {
   const original = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    return new Response(mockPplxStream(streamEvents), {
+  globalThis.fetch = async () => {
+    if (status === 200) {
+      return new Response(mockPplxStream(streamEvents), {
+        status,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    return new Response(bodyText ?? `{"error":"http ${status}"}`, {
       status,
-      headers: { "Content-Type": "text/event-stream" },
+      headers: { "Content-Type": "text/html" },
     });
   };
   return () => {
@@ -219,8 +242,166 @@ test("Streaming: produces valid SSE chunks", async () => {
   }
 });
 
-// ─── Test: Thinking/reasoning content ───────────────────────────────────────
+// ─── Test: Schematized diff_block streaming (use_schematized_api) ───────────
 
+test("Schematized API: diff_block chunks reconstruct answer (non-streaming)", async () => {
+  // Mirrors the live www.perplexity.ai schematized API: the answer streams as
+  // RFC-6902 JSON-patch frames against markdown_block, a `final:true` flag
+  // arrives on a still-PENDING frame, then a COMPLETED frame materializes the
+  // full markdown_block. The parser must NOT stop on `final` and must apply
+  // the diff patches.
+  const pplxEvents = [
+    {
+      backend_uuid: "diff-uuid-1",
+      status: "PENDING",
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          diff_block: {
+            field: "markdown_block",
+            patches: [
+              { op: "replace", path: "", value: { progress: "IN_PROGRESS", chunks: ["The "] } },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      status: "PENDING",
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          diff_block: {
+            field: "markdown_block",
+            patches: [{ op: "add", path: "/chunks/1", value: "answer " }],
+          },
+        },
+      ],
+    },
+    {
+      status: "PENDING",
+      final: true,
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          diff_block: {
+            field: "markdown_block",
+            patches: [{ op: "add", path: "/chunks/2", value: "is 42." }],
+          },
+        },
+      ],
+    },
+    {
+      status: "COMPLETED",
+      final: true,
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          markdown_block: {
+            progress: "DONE",
+            chunks: ["The answer is 42."],
+            answer: "The answer is 42.",
+          },
+        },
+      ],
+    },
+  ];
+
+  const restore = mockFetch(200, pplxEvents);
+  try {
+    const executor = new PerplexityWebExecutor();
+    const result = await executor.execute({
+      model: "pplx-auto",
+      body: { messages: [{ role: "user", content: "what is the answer?" }], stream: false },
+      stream: false,
+      credentials: { apiKey: "test-cookie" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 200);
+    const json = JSON.parse(await result.response.text());
+    assert.equal(json.choices[0].message.content, "The answer is 42.");
+  } finally {
+    restore();
+  }
+});
+
+test("Schematized API: diff_block streams incremental deltas", async () => {
+  const pplxEvents = [
+    {
+      backend_uuid: "diff-uuid-2",
+      status: "PENDING",
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          diff_block: {
+            field: "markdown_block",
+            patches: [
+              { op: "replace", path: "", value: { progress: "IN_PROGRESS", chunks: ["one, "] } },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      status: "PENDING",
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          diff_block: {
+            field: "markdown_block",
+            patches: [{ op: "add", path: "/chunks/1", value: "two, " }],
+          },
+        },
+      ],
+    },
+    {
+      status: "COMPLETED",
+      final: true,
+      blocks: [
+        {
+          intended_usage: "ask_text_0_markdown",
+          markdown_block: {
+            progress: "DONE",
+            chunks: ["one, two, three"],
+            answer: "one, two, three",
+          },
+        },
+      ],
+    },
+  ];
+
+  const restore = mockFetch(200, pplxEvents);
+  try {
+    const executor = new PerplexityWebExecutor();
+    const result = await executor.execute({
+      model: "pplx-auto",
+      body: { messages: [{ role: "user", content: "count" }], stream: true },
+      stream: true,
+      credentials: { apiKey: "test-cookie" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 200);
+    const text = await result.response.text();
+    let assembled = "";
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const d = line.slice(6).trim();
+      if (d === "[DONE]") continue;
+      const o = JSON.parse(d);
+      const c = o.choices?.[0]?.delta?.content;
+      if (c) assembled += c;
+    }
+    assert.equal(assembled, "one, two, three");
+  } finally {
+    restore();
+  }
+});
+
+// ─── Test: Thinking/reasoning content ───────────────────────────────────────
 test("Streaming: thinking content emitted as reasoning_content", async () => {
   const pplxEvents = [
     {
@@ -584,7 +765,7 @@ test("Auth: JWT auth sends Authorization Bearer header", async () => {
 
 // ─── Test: Model mapping ────────────────────────────────────────────────────
 
-test("Model mapping: pplx-gpt sends correct internal preference", async () => {
+test("Model mapping: pplx-gpt sends current GPT-5.5 internal preference", async () => {
   let capturedBody = null;
   const original = globalThis.fetch;
   globalThis.fetch = async (url, opts) => {
@@ -616,8 +797,8 @@ test("Model mapping: pplx-gpt sends correct internal preference", async () => {
       log: null,
     });
 
-    assert.equal(capturedBody.params.model_preference, "gpt54");
-    assert.equal(capturedBody.params.mode, "copilot");
+    assert.equal(capturedBody.params.model_preference, "gpt55");
+    assert.equal(capturedBody.params.mode, "search");
   } finally {
     globalThis.fetch = original;
   }
@@ -659,7 +840,8 @@ test("Model mapping: thinking mode uses thinking variant", async () => {
       log: null,
     });
 
-    assert.equal(capturedBody.params.model_preference, "claude46sonnetthinking");
+    assert.equal(capturedBody.params.model_preference, "claude50sonnetthinking");
+    assert.equal(capturedBody.params.mode, "search");
   } finally {
     globalThis.fetch = original;
   }
@@ -672,17 +854,31 @@ test("Provider registry: perplexity-web is registered with correct models", asyn
 
   const models = PROVIDER_MODELS["pplx-web"];
   assert.ok(models, "pplx-web should be in PROVIDER_MODELS");
-  assert.ok(models.length === 8, `Expected 8 models, got ${models.length}`);
+  assert.ok(models.length === 10, `Expected 10 models, got ${models.length}`);
 
   const modelIds = models.map((m) => m.id);
   assert.ok(modelIds.includes("pplx-auto"));
   assert.ok(modelIds.includes("pplx-gpt"));
+  assert.ok(modelIds.includes("pplx-gpt-5.4"));
   assert.ok(modelIds.includes("pplx-sonnet"));
   assert.ok(modelIds.includes("pplx-opus"));
   assert.ok(modelIds.includes("pplx-gemini"));
   assert.ok(modelIds.includes("pplx-nemotron"));
   assert.ok(modelIds.includes("pplx-sonar"));
   assert.ok(modelIds.includes("pplx-kimi"));
+  assert.ok(modelIds.includes("pplx-glm"));
+});
+
+test("Provider registry: every advertised perplexity-web model has an explicit internal mapping", async () => {
+  const { PROVIDER_MODELS } = await import("../../open-sse/config/providerModels.ts");
+  const { MODEL_MAP } = await import("../../open-sse/executors/perplexity-web/protocol.ts");
+
+  const missing = PROVIDER_MODELS["pplx-web"].filter((model) => !MODEL_MAP[model.id]);
+  assert.deepEqual(
+    missing.map((model) => model.id),
+    [],
+    "all advertised Perplexity Web models should map to an explicit model_preference"
+  );
 });
 
 // ─── Test: Fallback text field ──────────────────────────────────────────────
@@ -744,9 +940,59 @@ test("Request: posts to correct Perplexity SSE endpoint", async () => {
 
     assert.equal(capturedUrl, "https://www.perplexity.ai/rest/sse/perplexity_ask");
     assert.equal(capturedHeaders["Origin"], "https://www.perplexity.ai");
-    assert.equal(capturedHeaders["X-App-ApiVersion"], "client-1.11.0");
+    assert.equal(
+      capturedHeaders["x-perplexity-request-endpoint"],
+      "https://www.perplexity.ai/rest/sse/perplexity_ask"
+    );
+    assert.equal(capturedHeaders["x-perplexity-request-reason"], "ask-query-state-provider");
+    assert.ok(capturedHeaders["x-request-id"], "x-request-id header should be set");
     assert.equal(capturedHeaders["Accept"], "text/event-stream");
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+// ─── #2459: Cloudflare challenge vs genuine auth failure ─────────────────────
+
+test("Error: Cloudflare 403 challenge returns a distinct (non-cookie) error", async () => {
+  const restore = mockFetch(403, [], "<html><title>Just a moment...</title></html>");
+  try {
+    const executor = new PerplexityWebExecutor();
+    const result = await executor.execute({
+      model: "pplx-auto",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "valid-cookie" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 403);
+    const json = (await result.response.json()) as any;
+    assert.match(json.error.message, /Cloudflare/i);
+    assert.ok(!/session-token/i.test(json.error.message), "must not blame the cookie");
+  } finally {
+    restore();
+  }
+});
+
+test("Error: TlsClientUnavailableError returns 502 with install hint", async () => {
+  const restore = mockFetchError(new TlsClientUnavailableError("native binary missing"));
+  try {
+    const executor = new PerplexityWebExecutor();
+    const result = await executor.execute({
+      model: "pplx-auto",
+      body: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      credentials: { apiKey: "test-cookie" },
+      signal: AbortSignal.timeout(10000),
+      log: null,
+    });
+
+    assert.equal(result.response.status, 502);
+    const json = (await result.response.json()) as any;
+    assert.match(json.error.message, /TLS client unavailable/i);
+  } finally {
+    restore();
   }
 });

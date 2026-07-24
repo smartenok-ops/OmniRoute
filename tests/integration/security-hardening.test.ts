@@ -165,10 +165,23 @@ test("callLogs.ts wires no-log and PII sanitization before persistence", () => {
   const content = readIfExists("src/lib/usage/callLogs.ts");
   assert.ok(content, "src/lib/usage/callLogs.ts should exist");
   assert.ok(
-    content.includes('from "../compliance"'),
+    content.includes('from "../compliance"') || content.includes('from "../compliance/noLog"'),
     "callLogs.ts should import compliance module"
   );
-  assert.ok(content.includes('from "../piiSanitizer"'), "callLogs.ts should import piiSanitizer");
+  // PII sanitization for error strings was extracted to callLogs/format.ts by #5725
+  // (sanitizeErrorForLog); callLogs.ts still wires it in before persistence, and the
+  // extracted helper keeps the piiSanitizer dependency — so the "sanitize before
+  // persist" invariant holds post-refactor (verified on both the helper and the file).
+  assert.ok(
+    content.includes("sanitizeErrorForLog") && content.includes('from "./callLogs/format"'),
+    "callLogs.ts should wire the extracted PII-sanitizing error helper (sanitizeErrorForLog)"
+  );
+  const formatHelperContent = readIfExists("src/lib/usage/callLogs/format.ts");
+  assert.ok(formatHelperContent, "src/lib/usage/callLogs/format.ts should exist");
+  assert.ok(
+    formatHelperContent.includes('from "../../piiSanitizer"'),
+    "callLogs/format.ts should import piiSanitizer (PII sanitization still wired post-#5725)"
+  );
   assert.ok(content.includes("isNoLog("), "callLogs.ts should check no-log policy");
 
   const payloadHelperContent = readIfExists("src/lib/logPayloads.ts");
@@ -281,5 +294,23 @@ test("T06 route payload validation uses validateBody in critical endpoints", () 
       content.includes("validateBody("),
       `${relPath} should validate payload with validateBody`
     );
+  }
+});
+
+test("OAuth routes that can create provider connections require auth guard", () => {
+  const targets = [
+    "src/app/api/oauth/[provider]/[action]/route.ts",
+    "src/app/api/oauth/cursor/import/route.ts",
+    "src/app/api/oauth/kiro/import/route.ts",
+    "src/app/api/oauth/kiro/social-authorize/route.ts",
+    "src/app/api/oauth/kiro/social-exchange/route.ts",
+  ];
+
+  for (const relPath of targets) {
+    const content = readIfExists(relPath);
+    assert.ok(content, `${relPath} should exist`);
+    assert.ok(content.includes("isAuthRequired"), `${relPath} should check whether auth is active`);
+    assert.ok(content.includes("isAuthenticated"), `${relPath} should require authenticated users`);
+    assert.ok(content.includes("Unauthorized"), `${relPath} should reject anonymous requests`);
   }
 });

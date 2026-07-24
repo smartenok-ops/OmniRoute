@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createMcpServer } from "./server.ts";
+import { withMcpHttpAuthContext } from "./httpAuthContext.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -23,9 +24,26 @@ type StreamableSession = {
   server: McpServer;
   transport: WebStandardStreamableHTTPServerTransport;
   startedAt: number;
+  lastActivityAt: number;
 };
 
 const _streamableSessions = new Map<string, StreamableSession>();
+
+const MCP_SESSION_IDLE_MS = 5 * 60 * 1000;
+
+const _mcpSessionSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, session] of _streamableSessions) {
+    if (now - session.lastActivityAt > MCP_SESSION_IDLE_MS) {
+      try {
+        closeStreamableSession(sessionId);
+      } catch {}
+    }
+  }
+}, 60_000);
+if (typeof _mcpSessionSweep === "object" && "unref" in _mcpSessionSweep) {
+  (_mcpSessionSweep as { unref?: () => void }).unref?.();
+}
 
 function closeSseTransport(): void {
   if (_sseTransport) {
@@ -95,6 +113,7 @@ function createStreamableSession(): StreamableSession {
     server,
     transport,
     startedAt: Date.now(),
+    lastActivityAt: Date.now(),
   };
 
   void server.connect(transport);
@@ -150,11 +169,39 @@ async function handleStreamableRequest(request: Request): Promise<Response> {
   if (sessionId) {
     const session = _streamableSessions.get(sessionId);
     if (!session) {
-      return errorResponse("Bad Request: Unknown Mcp-Session-Id header", -32000);
+      // MCP spec (2025-03-26 / 2025-11-25, Session Management): once a session is
+      // terminated/unknown, the server MUST respond with HTTP 404 Not Found so the
+      // client re-initializes. A 400 here is non-recoverable for spec-compliant
+      // clients (they only re-init on 404). See issue #5169.
+      //
+      // Auto-recovery: if the client sends an initialize request with a stale session
+      // id (e.g. after a server restart or idle eviction), treat it as a fresh
+      // initialization rather than hard-failing with 404. This avoids requiring users
+      // to manually restart their MCP client after every server restart.
+      if (await isInitializeRequest(request)) {
+        const newSession = createStreamableSession();
+        try {
+          const response = await withMcpHttpAuthContext(request, () =>
+            newSession.transport.handleRequest(request)
+          );
+          return withSessionHeader(response, newSession.sessionId);
+        } catch (err) {
+          closeStreamableSession(newSession.sessionId);
+          console.error("[MCP] Streamable HTTP error during stale-session recovery:", err);
+          return new Response(JSON.stringify({ error: "MCP transport error" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
+      return errorResponse("Not Found: Unknown Mcp-Session-Id header", -32000, 404);
     }
 
     try {
-      const response = await session.transport.handleRequest(request);
+      session.lastActivityAt = Date.now();
+      const response = await withMcpHttpAuthContext(request, () =>
+        session.transport.handleRequest(request)
+      );
       if (request.method === "DELETE") {
         closeStreamableSession(sessionId);
       }
@@ -178,7 +225,9 @@ async function handleStreamableRequest(request: Request): Promise<Response> {
   const session = createStreamableSession();
 
   try {
-    const response = await session.transport.handleRequest(request);
+    const response = await withMcpHttpAuthContext(request, () =>
+      session.transport.handleRequest(request)
+    );
     return withSessionHeader(response, session.sessionId);
   } catch (err) {
     closeStreamableSession(session.sessionId);
@@ -207,7 +256,7 @@ export async function handleMcpSSE(request: Request): Promise<Response> {
   const { transport } = ensureSseServer();
 
   try {
-    return await transport.handleRequest(request);
+    return await withMcpHttpAuthContext(request, () => transport.handleRequest(request));
   } catch (err) {
     console.error("[MCP] SSE error:", err);
     return new Response(JSON.stringify({ error: "MCP SSE transport error" }), {
@@ -237,6 +286,13 @@ export function getMcpHttpStatus(): {
     startedAt,
     uptime: startedAt ? `${Math.floor((Date.now() - startedAt) / 1000)}s` : null,
   };
+}
+
+export function isMcpHttpTransportReady(
+  enabled: boolean,
+  transport: string | null | undefined
+): boolean {
+  return enabled && (transport === "sse" || transport === "streamable-http");
 }
 
 export function shutdownMcpHttp(): void {

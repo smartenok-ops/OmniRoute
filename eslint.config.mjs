@@ -4,6 +4,23 @@ import tseslint from "typescript-eslint";
 /** @type {import("eslint").Linter.Config[]} */
 const eslintConfig = [
   ...nextVitals,
+  // Pacote 4 (plano mestre testes+CI, 2026-07-04) — zero-warning policy: TODA regra roda
+  // como "error" e a dívida pré-existente vive congelada por arquivo+regra em
+  // config/quality/eslint-suppressions.json (ESLint bulk suppressions nativo). Violação
+  // NOVA = vermelho no ato (lint-staged no pre-commit + job lint-guard no fast path);
+  // o drift de +41/+88 warnings/ciclo que era rebaselinado às cegas na release morre no
+  // PR que o introduz. Aperto do baseline: npx eslint . --prune-suppressions
+  // --suppressions-location config/quality/eslint-suppressions.json (na release).
+  {
+    // Escopo = onde os presets do next registram estes plugins (bloco global sem `files`
+    // atingiria scripts/*.mjs sem o plugin react-hooks e explodiria o flat config).
+    files: ["src/**/*.{ts,tsx,js,jsx}"],
+    rules: {
+      "react-hooks/exhaustive-deps": "error",
+      "@next/next/no-img-element": "error",
+      "import/no-anonymous-default-export": "error",
+    },
+  },
   // FASE-02: Security rules (strict everywhere)
   {
     rules: {
@@ -23,6 +40,25 @@ const eslintConfig = [
       ],
     },
   },
+  // i18n: ham toLowerCase().includes() arama pattern'ini engelle
+  // (Türkçe İ/ı karakterlerini bozar — matchesSearch kullanılmalı).
+  // "warn" (error değil): kuralın eklendiği anda kod tabanında zaten bu pattern'i
+  // kullanan ~19 satır var; aşamalı temizlik için uyarı seviyesinde tutuluyor
+  // (proje politikası: 0 error, warning'ler tolere edilir).
+  {
+    files: ["src/app/**/*.{ts,tsx}", "src/components/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.property.name='includes'][callee.object.callee.property.name='toLowerCase']",
+          message:
+            "Türkçe-güvenli arama için matchesSearch() kullan (@/shared/utils/turkishText). Ham toLowerCase().includes() İ/ı karakterlerini bozar.",
+        },
+      ],
+    },
+  },
   // Relaxed rules for open-sse and tests (incremental adoption)
   {
     files: ["open-sse/**/*.ts", "tests/**/*.mjs", "tests/**/*.ts"],
@@ -30,7 +66,7 @@ const eslintConfig = [
       "@typescript-eslint": tseslint.plugin,
     },
     rules: {
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-explicit-any": "error",
       "@next/next/no-assign-module-variable": "off",
       "react-hooks/rules-of-hooks": "off",
     },
@@ -38,11 +74,13 @@ const eslintConfig = [
   // Global ignores — keep ESLint scoped to source files only
   {
     ignores: [
-      // Next.js build output
+      // Next.js build output (distDir now .build/next; keep .next for legacy)
       ".next/**",
+      ".build/**",
       "src/.next/**",
       "out/**",
       "build/**",
+      "dist/**",
       "coverage/**",
       "next-env.d.ts",
       // Scripts and binaries
@@ -50,6 +88,12 @@ const eslintConfig = [
       "bin/**",
       // Dependencies
       "node_modules/**",
+      ".worktrees/**",
+      // Nested git worktrees created by review/resolve skills live under
+      // .claude/ (gitignored). They hold other sessions' in-progress work and
+      // their files move mid-scan, so never lint them from the main checkout.
+      ".claude/**",
+      ".omnivscodeagent/**",
       // VS Code extension and its large test fixtures
       "vscode-extension/**",
       "_references/**",
@@ -63,12 +107,9 @@ const eslintConfig = [
       // Playwright test output
       "playwright-report/**",
       "test-results/**",
-      // Subdirectory .next build output (app/ subdir)
+      // Legacy app/ and QA backup dirs (renamed to dist/ in Layer 1)
       "app/**",
-      "app/.next/**",
-      "app/bin/**",
       "app.__qa_backup/**",
-      "app/app.__qa_backup/**",
       // CLI package copy directory
       "clipr/**",
     ],

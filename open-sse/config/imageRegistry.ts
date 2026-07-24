@@ -5,11 +5,14 @@
  * Each provider has its own request format and endpoint.
  */
 
+import { LMARENA_DIRECT_IMAGE_MODELS } from "./providers/registry/lmarena/directModels.ts";
+
 interface ImageModelEntry {
   id: string;
   name: string;
   inputModalities?: string[];
   description?: string;
+  isMarket?: boolean;
 }
 
 interface ImageProviderConfig {
@@ -35,7 +38,22 @@ interface ImageModelAliasEntry {
   description?: string;
 }
 
+interface ImageCatalogModelEntry {
+  id: string;
+  name: string;
+  provider: string;
+  supportedSizes: string[];
+  inputModalities: string[];
+  description?: string;
+}
+
 const IMAGE_MODEL_ALIASES: Record<string, ImageModelAliasEntry> = {
+  "gemini-3.1-flash-image-preview": {
+    provider: "antigravity",
+    model: "gemini-3.1-flash-image",
+    name: "Gemini 3.1 Flash Image",
+    listInCatalog: false,
+  },
   "flux-kontext": {
     provider: "black-forest-labs",
     model: "flux-kontext-pro",
@@ -121,7 +139,7 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
   },
 
   // Codex exposes image generation only as a Responses-API hosted tool under
-  // ChatGPT OAuth. Incoming DALL-E-style `/v1/images/generations` requests are
+  // ChatGPT OAuth. Incoming GPT-Image-style `/v1/images/generations` requests are
   // translated to /responses calls with `tools: [{ type: "image_generation" }]`
   // by handleCodexImageGeneration.
   codex: {
@@ -132,9 +150,9 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     authHeader: "bearer",
     format: "codex-responses",
     models: [
-      { id: "gpt-5.5", name: "GPT 5.5 (Codex Image)" },
-      { id: "gpt-5.4", name: "GPT 5.4 (Codex Image)" },
-      { id: "gpt-5.3-codex", name: "GPT 5.3 Codex (Image)" },
+      { id: "gpt-5.6-sol", name: "GPT 5.6 Sol (Codex Image)" },
+      { id: "gpt-5.6-terra", name: "GPT 5.6 Terra (Codex Image)" },
+      { id: "gpt-5.6-luna", name: "GPT 5.6 Luna (Codex Image)" },
     ],
     supportedSizes: ["1024x1024", "1024x1536", "1536x1024"],
   },
@@ -146,7 +164,7 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     authType: "apikey",
     authHeader: "cookie",
     format: "chatgpt-web",
-    models: [{ id: "gpt-5.3-instant", name: "GPT-5.3 Instant (ChatGPT Web Image)" }],
+    models: [{ id: "gpt-5.5", name: "GPT-5.5 Instant (ChatGPT Web Image)" }],
     supportedSizes: ["1024x1024", "1024x1536", "1536x1024"],
   },
 
@@ -156,8 +174,25 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     authType: "apikey",
     authHeader: "bearer",
     format: "openai",
-    models: [{ id: "grok-imagine-image", name: "Grok Imagine Image" }],
-    supportedSizes: ["1024x1024"],
+    models: [
+      { id: "grok-imagine-image-quality", name: "Grok Imagine Image Quality" },
+      { id: "grok-imagine-image", name: "Grok Imagine Image" },
+    ],
+    supportedSizes: ["1024x1024", "2048x2048"],
+  },
+
+  "vercel-ai-gateway": {
+    id: "vercel-ai-gateway",
+    alias: "vag",
+    baseUrl: "https://ai-gateway.vercel.sh/v1/images/generations",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [
+      { id: "gpt-image-1", name: "GPT Image 1" },
+      { id: "black-forest-labs/flux-1.1-pro", name: "FLUX 1.1 Pro" },
+    ],
+    supportedSizes: ["1024x1024", "1024x1792", "1792x1024"],
   },
 
   together: {
@@ -223,11 +258,11 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
 
   antigravity: {
     id: "antigravity",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
+    baseUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
     authType: "oauth",
     authHeader: "bearer",
     format: "gemini-image", // Special format: uses Gemini generateContent API
-    models: [],
+    models: [{ id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image" }],
     supportedSizes: ["1024x1024"],
   },
 
@@ -269,6 +304,88 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     supportedSizes: ["1024x1024", "1024x1280", "1024x1536", "1536x1024", "1280x1024"],
   },
 
+  kie: {
+    id: "kie",
+    baseUrl: "https://api.kie.ai",
+    statusUrl: "https://api.kie.ai/api/v1/jobs/recordInfo",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "kie-image",
+    models: [
+      { id: "gpt4o-image", name: "KIE 4o Image" },
+      { id: "seedream/4.5-text-to-image", name: "Seedream 4.5", isMarket: true },
+      { id: "seedream/4.5-edit", name: "Seedream 4.5 Edit", isMarket: true },
+      { id: "seedream/5.0-lite-text-to-image", name: "Seedream 5.0 Lite", isMarket: true },
+      { id: "seedream/5.0-lite-image-to-image", name: "Seedream 5.0 Lite I2I", isMarket: true },
+      { id: "z-image/4.0-text-to-image", name: "Z-Image v4.0", isMarket: true },
+      { id: "z-image/4.5-text-to-image", name: "Z-Image v4.5", isMarket: true },
+      { id: "google-imagen/imagen4-fast", name: "Imagen 4 Fast", isMarket: true },
+      { id: "google-imagen/imagen4-ultra", name: "Imagen 4 Ultra", isMarket: true },
+      { id: "google-imagen/imagen4", name: "Imagen 4", isMarket: true },
+      { id: "google-imagen/nano-banana-2", name: "Nano Banana 2", isMarket: true },
+      { id: "google-imagen/nano-banana", name: "Nano Banana", isMarket: true },
+      { id: "google-imagen/nano-banana-pro", name: "Nano Banana Pro", isMarket: true },
+      { id: "google-imagen/nano-banana-edit", name: "Nano Banana Edit", isMarket: true },
+      { id: "flux/2-pro-image-to-image", name: "Flux 2 Pro I2I", isMarket: true },
+      { id: "flux/2-pro-text-to-image", name: "Flux 2 Pro T2I", isMarket: true },
+      { id: "flux/2-image-to-image", name: "Flux 2 I2I", isMarket: true },
+      { id: "flux/2-text-to-image", name: "Flux 2 T2I", isMarket: true },
+      { id: "flux/kontext", name: "Flux Kontext", isMarket: true },
+      { id: "grok-imagine/text-to-image", name: "Grok Imagine T2I", isMarket: true },
+      { id: "grok-imagine/image-to-image", name: "Grok Imagine I2I", isMarket: true },
+      { id: "gpt/gpt-image-1.5-text-to-image", name: "GPT Image 1.5 T2I", isMarket: true },
+      { id: "gpt/gpt-image-1.5-image-to-image", name: "GPT Image 1.5 I2I", isMarket: true },
+      { id: "gpt/gpt-image-2-text-to-image", name: "GPT Image 2 T2I", isMarket: true },
+      { id: "gpt/gpt-image-2-image-to-image", name: "GPT Image 2 I2I", isMarket: true },
+      { id: "ideogram/v3-text-to-image", name: "Ideogram v3", isMarket: true },
+      { id: "ideogram/v3-edit", name: "Ideogram v3 Edit", isMarket: true },
+      { id: "ideogram/v3-remix", name: "Ideogram v3 Remix", isMarket: true },
+      { id: "ideogram/v3-reframe", name: "Ideogram v3 Reframe", isMarket: true },
+      { id: "qwen/text-to-image", name: "Qwen T2I", isMarket: true },
+      { id: "qwen/image-to-image", name: "Qwen I2I", isMarket: true },
+      { id: "qwen/image-edit", name: "Qwen Edit", isMarket: true },
+      { id: "qwen2/image-edit", name: "Qwen2 Edit", isMarket: true },
+      { id: "qwen2/text-to-image", name: "Qwen2 T2I", isMarket: true },
+      { id: "wan/2.7-image", name: "Wan 2.7 Image", isMarket: true },
+      { id: "wan/2.7-image-pro", name: "Wan 2.7 Image Pro", isMarket: true },
+    ],
+    supportedSizes: ["1:1", "16:9", "9:16", "4:3", "3:4"],
+  },
+
+  haiper: {
+    id: "haiper",
+    baseUrl: "https://api.haiper.ai/v1/jobs/gen2/text2image",
+    statusUrl: "https://api.haiper.ai/v1/jobs",
+    authType: "apikey",
+    authHeader: "HAIPER_KEY",
+    format: "haiper-image",
+    models: [{ id: "gen2", name: "Gen 2 Image" }],
+    supportedSizes: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+  },
+  leonardo: {
+    id: "leonardo",
+    baseUrl: "https://cloud.leonardo.ai/api/rest/v1/generations",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "leonardo-image",
+    models: [
+      { id: "phoenix", name: "Phoenix" },
+      { id: "sdxl", name: "SDXL" },
+    ],
+    supportedSizes: ["1024x1024", "1024x576", "576x1024"],
+  },
+  ideogram: {
+    id: "ideogram",
+    baseUrl: "https://api.ideogram.ai/generate",
+    authType: "apikey",
+    authHeader: "Api-Key",
+    format: "ideogram-image",
+    models: [
+      { id: "V_3", name: "Ideogram V3" },
+      { id: "V_2A", name: "Ideogram V2A" },
+    ],
+    supportedSizes: ["1024x1024", "1024x1792", "1792x1024"],
+  },
   sdwebui: {
     id: "sdwebui",
     baseUrl: "http://localhost:7860/sdapi/v1/txt2img",
@@ -437,6 +554,101 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     models: [{ id: "topaz-enhance", name: "topaz-enhance", inputModalities: ["image"] }],
     supportedSizes: ["1024x1024"],
   },
+  nanogpt: {
+    id: "nanogpt",
+    baseUrl: "https://nano-gpt.com/api/v1/images/generations",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [
+      { id: "qwen-image", name: "Qwen Image", inputModalities: ["text", "image"] },
+      { id: "z-image-turbo", name: "Z Image Turbo" },
+      { id: "chroma", name: "Chroma" },
+      { id: "hidream", name: "Hidream I1 Full" },
+    ],
+    supportedSizes: ["1024x1024", "1024x1280", "1280x1024"],
+  },
+
+  // NVIDIA NIM image generation (FLUX models). Distinct from the NVIDIA *chat* entry
+  // (open-sse/config/providers/registry/nvidia/index.ts, host integrate.api.nvidia.com,
+  // OpenAI-compatible) — image generation lives on ai.api.nvidia.com/v1/genai/<model>
+  // with a native NIM body per model, so it gets a dedicated `nvidia-nim` format/handler
+  // (handleNvidiaNimImageGeneration) rather than reusing the OpenAI image path.
+  // Ported from upstream 9router#1195.
+  nvidia: {
+    id: "nvidia",
+    baseUrl: "https://ai.api.nvidia.com/v1/genai",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "nvidia-nim",
+    models: [
+      {
+        id: "black-forest-labs/flux.1-dev",
+        name: "FLUX.1 Dev",
+        inputModalities: ["text", "image"],
+      },
+      { id: "black-forest-labs/flux.1-schnell", name: "FLUX.1 Schnell" },
+      {
+        id: "black-forest-labs/flux.1-kontext-dev",
+        name: "FLUX.1 Kontext Dev (Edit)",
+        inputModalities: ["text", "image"],
+      },
+      {
+        id: "black-forest-labs/flux.2-klein-4b",
+        name: "FLUX.2 Klein 4B",
+        inputModalities: ["text", "image"],
+      },
+    ],
+    supportedSizes: ["1024x1024", "768x1344", "512x512"],
+  },
+
+  // SenseNova (商汤日日新) Text-to-Image on the free Token Plan. OpenAI-compatible
+  // `/v1/images/generations`, so the generic OpenAI image handler routes it — same
+  // SenseNova api-key/connection as the chat provider. (9router#2233)
+  sensenova: {
+    id: "sensenova",
+    baseUrl: "https://api.sensenova.cn/v1/images/generations",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [{ id: "sensenova-u1-fast", name: "SenseNova U1 Fast" }],
+    supportedSizes: ["1024x1024"],
+  },
+
+  // HuggingFace Hub Inference API text-to-image task. Returns raw image bytes
+  // (not JSON), so it uses a dedicated "huggingface-image" format handled by
+  // handleHuggingFaceImageGeneration. Same base URL convention as the HF
+  // STT/TTS entries in audioRegistry.ts. Model list is deliberately small —
+  // the dashboard's "suggested models" chip row (GET
+  // /api/v1/providers/suggested-models) surfaces additional HF Hub models
+  // beyond this seed list.
+  huggingface: {
+    id: "huggingface",
+    baseUrl: "https://api-inference.huggingface.co/models",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "huggingface-image",
+    models: [
+      { id: "black-forest-labs/FLUX.1-dev", name: "FLUX.1 Dev (HF)" },
+      { id: "black-forest-labs/FLUX.1-schnell", name: "FLUX.1 Schnell (HF)" },
+      { id: "stabilityai/stable-diffusion-xl-base-1.0", name: "Stable Diffusion XL (HF)" },
+    ],
+    supportedSizes: ["1024x1024"],
+  },
+
+  // Arena (formerly LMArena) Direct-chat Image category (static scrape 2026-07-09).
+  // Not listed in the chat registry — image catalog only. Generation path still
+  // uses cookie session auth via the lmarena provider connection (stable wire id).
+  lmarena: {
+    id: "lmarena",
+    alias: "lma",
+    baseUrl: "https://arena.ai/nextjs-api/stream/create-evaluation",
+    authType: "apikey",
+    authHeader: "cookie",
+    format: "openai",
+    models: LMARENA_DIRECT_IMAGE_MODELS,
+    supportedSizes: ["1024x1024", "1024x1792", "1792x1024"],
+  },
 };
 
 /**
@@ -488,38 +700,64 @@ export function parseImageModel(modelStr) {
 /**
  * Get all image models as a flat list
  */
-export function getAllImageModels() {
-  const models = [];
-  for (const [providerId, config] of Object.entries(IMAGE_PROVIDERS)) {
-    for (const model of config.models) {
-      models.push({
-        id: `${providerId}/${model.id}`,
-        name: model.name,
-        provider: providerId,
-        supportedSizes: config.supportedSizes,
-        inputModalities: model.inputModalities || ["text"],
-        description: model.description || undefined,
-      });
-    }
-  }
-  for (const [alias, target] of Object.entries(IMAGE_MODEL_ALIASES)) {
-    if (!target.listInCatalog) continue;
-    const providerConfig = IMAGE_PROVIDERS[target.provider];
-    const modelConfig = findImageModelConfig(target.provider, target.model);
-    models.push({
-      id: alias,
-      name: target.name || modelConfig?.name || alias,
-      provider: target.provider,
-      supportedSizes: providerConfig?.supportedSizes || [],
-      inputModalities: target.inputModalities || modelConfig?.inputModalities || ["text"],
-      description: target.description || modelConfig?.description || undefined,
-    });
-  }
-  return models;
+function imageProviderCatalogEntries(
+  providerId: string,
+  config: ImageProviderConfig
+): ImageCatalogModelEntry[] {
+  return config.models.map((model) => ({
+    id: `${providerId}/${model.id}`,
+    name: model.name,
+    provider: providerId,
+    supportedSizes: config.supportedSizes,
+    inputModalities: model.inputModalities || ["text"],
+    description: model.description || undefined,
+  }));
+}
+
+function imageAliasCatalogEntry(
+  alias: string,
+  target: ImageModelAliasEntry
+): ImageCatalogModelEntry | null {
+  if (!target.listInCatalog) return null;
+
+  const providerConfig = IMAGE_PROVIDERS[target.provider];
+  const modelConfig = findImageModelConfig(target.provider, target.model);
+  return {
+    id: alias,
+    name: target.name || modelConfig?.name || alias,
+    provider: target.provider,
+    supportedSizes: providerConfig?.supportedSizes || [],
+    inputModalities: target.inputModalities || modelConfig?.inputModalities || ["text"],
+    description: target.description || modelConfig?.description || undefined,
+  };
+}
+
+export function getAllImageModels(): ImageCatalogModelEntry[] {
+  const providerModels = Object.entries(IMAGE_PROVIDERS).flatMap(([providerId, config]) =>
+    imageProviderCatalogEntries(providerId, config)
+  );
+  const aliasModels = Object.entries(IMAGE_MODEL_ALIASES).flatMap(([alias, target]) => {
+    const entry = imageAliasCatalogEntry(alias, target);
+    return entry ? [entry] : [];
+  });
+  return [...providerModels, ...aliasModels];
 }
 
 export function getImageModelAliases() {
   return IMAGE_MODEL_ALIASES;
+}
+
+/**
+ * #6457 — precise provider+modelId membership check against the image registry.
+ * Unlike getImageModelEntry() (which also resolves bare aliases and unprefixed
+ * ids by scanning every provider), this only answers "is `modelId` registered
+ * as an image model under this exact `providerId`?" — used by the chat catalog
+ * builder to keep upstream-discovered models (e.g. HuggingFace's live
+ * `/v1/models`, which returns image/diffusion models with no modality field)
+ * out of the chat listing when they are already known image-only models.
+ */
+export function isRegisteredImageModel(providerId, modelId) {
+  return Boolean(findImageModelConfig(providerId, modelId));
 }
 
 export function getImageModelEntry(modelStr) {

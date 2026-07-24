@@ -1,7 +1,10 @@
 // Allow large audio/video file uploads — 5min for processing large files (up to 2GB)
 export const maxDuration = 300;
 import { handleAudioTranscription } from "@omniroute/open-sse/handlers/audioTranscription.ts";
-import { getProviderCredentials, clearRecoveredProviderState } from "@/sse/services/auth";
+import {
+  getProviderCredentialsWithQuotaPreflight,
+  clearRecoveredProviderState,
+} from "@/sse/services/auth";
 import {
   parseTranscriptionModel,
   getTranscriptionProvider,
@@ -12,6 +15,12 @@ import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { getProviderNodes } from "@/lib/localDb";
+import {
+  isAllRateLimitedCredentials,
+  rateLimitedProviderResponse,
+} from "@/app/api/v1/_shared/rateLimit";
+import { attachOmniRouteMetaToResponse } from "@/domain/omnirouteResponseMeta";
+import { generateRequestId } from "@/shared/utils/requestId";
 
 /**
  * Handle CORS preflight
@@ -36,6 +45,8 @@ export async function POST(request) {
   } catch {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart form data");
   }
+
+  const startTime = Date.now();
 
   const model = formData.get("model");
   if (!model) {
@@ -88,13 +99,16 @@ export async function POST(request) {
   // Get credentials — skip for local providers (authType: "none")
   let credentials = null;
   if (providerConfig && providerConfig.authType !== "none") {
-    credentials = await getProviderCredentials(provider);
+    credentials = await getProviderCredentialsWithQuotaPreflight(provider);
     if (!credentials) {
       return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
     }
+    if (isAllRateLimitedCredentials(credentials)) {
+      return rateLimitedProviderResponse(provider, credentials);
+    }
   }
 
-  const response = await handleAudioTranscription({
+  let response = await handleAudioTranscription({
     formData,
     credentials,
     resolvedProvider: providerConfig,
@@ -102,6 +116,15 @@ export async function POST(request) {
   });
   if (response?.ok) {
     await clearRecoveredProviderState(credentials);
+    // No text body / playback duration available from the multipart upload, so
+    // per-second pricing cannot be applied → cost 0 (ADD-only headers, body intact).
+    response = attachOmniRouteMetaToResponse(response, {
+      provider,
+      model: resolvedModel,
+      costUsd: 0,
+      latencyMs: Date.now() - startTime,
+      requestId: generateRequestId(),
+    });
   }
   return response;
 }

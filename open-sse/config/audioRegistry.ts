@@ -3,6 +3,7 @@
  *
  * Defines providers that support audio endpoints:
  * - /v1/audio/transcriptions (Whisper API)
+ * - /v1/audio/translations (Whisper translate-to-English API)
  * - /v1/audio/speech (TTS API)
  */
 
@@ -17,11 +18,25 @@ export interface AudioProvider {
   authType: string;
   authHeader: string;
   format?: string;
+  supportedFormats?: string[];
   async?: boolean;
   models: AudioModel[];
 }
 
 export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
+  vertex: {
+    id: "vertex",
+    baseUrl: "https://us-central1-aiplatform.googleapis.com/v1",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "vertex-gemini",
+    models: [
+      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash (Vertex Transcribe)" },
+      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro (Vertex Transcribe)" },
+      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (Vertex Transcribe)" },
+    ],
+  },
+
   openai: {
     id: "openai",
     baseUrl: "https://api.openai.com/v1/audio/transcriptions",
@@ -31,6 +46,14 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
       { id: "whisper-1", name: "Whisper 1" },
       { id: "gpt-4o-transcription", name: "GPT-4o Transcription" },
     ],
+  },
+
+  cohere: {
+    id: "cohere",
+    baseUrl: "https://api.cohere.com/v2/audio/transcriptions",
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [{ id: "cohere-transcribe-03-2026", name: "Cohere Transcribe 2026-03" }],
   },
 
   groq: {
@@ -58,6 +81,27 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
     ],
   },
 
+  pollinations: {
+    id: "pollinations",
+    baseUrl: "https://gen.pollinations.ai/v1/audio/transcriptions",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [{ id: "whisper", name: "Pollinations Whisper (Free)" }],
+  },
+
+  together: {
+    id: "together",
+    baseUrl: "https://api.together.xyz/v1/audio/transcriptions",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [
+      { id: "openai/whisper-large-v3", name: "Whisper Large v3" },
+      { id: "openai/whisper-large-v3-turbo", name: "Whisper Large v3 Turbo" },
+    ],
+  },
+
   assemblyai: {
     id: "assemblyai",
     baseUrl: "https://api.assemblyai.com/v2/transcript",
@@ -77,7 +121,10 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
     authType: "apikey",
     authHeader: "bearer",
     format: "nvidia-asr",
-    models: [{ id: "nvidia/parakeet-ctc-1.1b-asr", name: "Parakeet CTC 1.1B" }],
+    models: [
+      { id: "nvidia/parakeet-ctc-1.1b-asr", name: "Parakeet CTC 1.1B" },
+      { id: "openai/whisper-large-v3", name: "Whisper Large v3 (NVIDIA)" },
+    ],
   },
 
   huggingface: {
@@ -87,8 +134,8 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
     authHeader: "bearer",
     format: "huggingface-asr",
     models: [
+      { id: "openai/whisper-large-v3-turbo", name: "Whisper Large v3 Turbo (HF)" },
       { id: "openai/whisper-large-v3", name: "Whisper Large v3 (HF)" },
-      { id: "openai/whisper-small", name: "Whisper Small (HF)" },
     ],
   },
 
@@ -100,17 +147,66 @@ export const AUDIO_TRANSCRIPTION_PROVIDERS: Record<string, AudioProvider> = {
     format: "openai",
     models: [{ id: "qwen3-asr", name: "Qwen3 ASR" }],
   },
+
+  kie: {
+    id: "kie",
+    baseUrl: "https://api.kie.ai",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "kie-audio",
+    models: [
+      { id: "elevenlabs/speech-to-text", name: "ElevenLabs STT" },
+      { id: "elevenlabs/audio-isolation", name: "ElevenLabs Audio Isolation" },
+    ],
+  },
+};
+
+/**
+ * Providers that expose an OpenAI-Whisper-compatible /audio/translations
+ * endpoint (translate-to-English). This is a narrower surface than
+ * transcription: only Whisper-family models support it, and there is no
+ * `language` input — output is always English regardless of source audio.
+ */
+export const AUDIO_TRANSLATION_PROVIDERS: Record<string, AudioProvider> = {
+  openai: {
+    id: "openai",
+    baseUrl: "https://api.openai.com/v1/audio/translations",
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [{ id: "whisper-1", name: "Whisper 1" }],
+  },
+
+  groq: {
+    id: "groq",
+    baseUrl: "https://api.groq.com/openai/v1/audio/translations",
+    authType: "apikey",
+    authHeader: "bearer",
+    models: [{ id: "whisper-large-v3", name: "Whisper Large v3" }],
+  },
 };
 
 export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
+  vertex: {
+    id: "vertex",
+    baseUrl: "https://us-central1-aiplatform.googleapis.com/v1",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "vertex-gemini-tts",
+    models: [
+      { id: "gemini-3.1-flash-tts-preview", name: "Gemini 3.1 Flash TTS (Vertex)" },
+      { id: "gemini-2.5-flash-preview-tts", name: "Gemini 2.5 Flash TTS (Vertex)" },
+      { id: "gemini-2.5-pro-preview-tts", name: "Gemini 2.5 Pro TTS (Vertex)" },
+    ],
+  },
+
   openai: {
     id: "openai",
     baseUrl: "https://api.openai.com/v1/audio/speech",
     authType: "apikey",
     authHeader: "bearer",
     models: [
-      { id: "tts-1", name: "TTS 1" },
       { id: "tts-1-hd", name: "TTS 1 HD" },
+      { id: "tts-1", name: "TTS 1" },
       { id: "gpt-4o-mini-tts", name: "GPT-4o Mini TTS" },
     ],
   },
@@ -168,8 +264,9 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
     authHeader: "bearer",
     format: "huggingface-tts",
     models: [
-      { id: "facebook/mms-tts-eng", name: "MMS TTS English" },
-      { id: "microsoft/speecht5_tts", name: "SpeechT5 TTS" },
+      { id: "canopylabs/orpheus-3b-0.1-ft", name: "Orpheus 3B" },
+      { id: "ResembleAI/chatterbox", name: "Chatterbox" },
+      { id: "hexgrad/Kokoro-82M", name: "Kokoro TTS" },
     ],
   },
 
@@ -211,8 +308,9 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
     authType: "apikey",
     authHeader: "basic",
     format: "inworld",
+    supportedFormats: ["mp3", "wav", "opus", "pcm"],
     models: [
-      { id: "inworld-tts-1.5-max", name: "Inworld TTS 1.5 Max" },
+      { id: "inworld-tts-2", name: "Inworld TTS 2" },
       { id: "inworld-tts-1.5-mini", name: "Inworld TTS 1.5 Mini" },
     ],
   },
@@ -227,8 +325,8 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
     authHeader: "x-api-key",
     format: "cartesia",
     models: [
-      { id: "sonic-2", name: "Sonic 2" },
       { id: "sonic-3", name: "Sonic 3" },
+      { id: "sonic-2", name: "Sonic 2" },
     ],
   },
 
@@ -247,6 +345,20 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
     ],
   },
 
+  kie: {
+    id: "kie",
+    baseUrl: "https://api.kie.ai",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "kie-audio",
+    models: [
+      { id: "elevenlabs/text-to-speech-multilingual-v2", name: "ElevenLabs TTS v2" },
+      { id: "elevenlabs/text-to-speech-turbo-2-5", name: "ElevenLabs TTS Turbo 2.5" },
+      { id: "elevenlabs/text-to-dialogue-v3", name: "ElevenLabs Text to Dialogue v3" },
+      { id: "elevenlabs/sound-effect-v2", name: "ElevenLabs Sound Effect v2" },
+    ],
+  },
+
   "aws-polly": {
     id: "aws-polly",
     // POST https://polly.{region}.amazonaws.com/v1/speech
@@ -262,12 +374,44 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
       { id: "generative", name: "Polly Generative" },
     ],
   },
+  pollinations: {
+    id: "pollinations",
+    baseUrl: "https://gen.pollinations.ai/v1/audio/speech",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [{ id: "default", name: "Pollinations TTS (Free)" }],
+  },
+
+  minimax: {
+    id: "minimax",
+    baseUrl: "https://api.minimax.io/v1/t2a_v2",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "minimax-tts",
+    models: [{ id: "speech-2.8-hd", name: "Speech 2.8 HD" }],
+  },
+
+  together: {
+    id: "together",
+    baseUrl: "https://api.together.xyz/v1/audio/speech",
+    authType: "apikey",
+    authHeader: "bearer",
+    format: "openai",
+    models: [
+      { id: "cartesia/sonic-2", name: "Cartesia Sonic 2" },
+      { id: "hexgrad/Kokoro-82M", name: "Kokoro 82M" },
+      { id: "canopylabs/orpheus-3b-0.1-ft", name: "Orpheus 3B" },
+    ],
+  },
+
   "xiaomi-mimo": {
     id: "xiaomi-mimo",
     baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
     authType: "apikey",
     authHeader: "bearer",
     format: "xiaomi-mimo-tts",
+    supportedFormats: ["mp3", "wav"],
     models: [
       { id: "mimo-v2.5-tts", name: "MiMo V2.5 TTS" },
       { id: "mimo-v2.5-tts-voicedesign", name: "MiMo V2.5 Voice Design" },
@@ -281,6 +425,13 @@ export const AUDIO_SPEECH_PROVIDERS: Record<string, AudioProvider> = {
  */
 export function getTranscriptionProvider(providerId: string): AudioProvider | null {
   return AUDIO_TRANSCRIPTION_PROVIDERS[providerId] || null;
+}
+
+/**
+ * Get translation provider config by ID
+ */
+export function getTranslationProvider(providerId: string): AudioProvider | null {
+  return AUDIO_TRANSLATION_PROVIDERS[providerId] || null;
 }
 
 /**
@@ -358,6 +509,10 @@ export function parseTranscriptionModel(
 
 export function parseSpeechModel(modelStr: string | null, dynamicProviders?: AudioProvider[]) {
   return parseAudioModel(modelStr, AUDIO_SPEECH_PROVIDERS, dynamicProviders);
+}
+
+export function parseTranslationModel(modelStr: string | null, dynamicProviders?: AudioProvider[]) {
+  return parseAudioModel(modelStr, AUDIO_TRANSLATION_PROVIDERS, dynamicProviders);
 }
 
 /**

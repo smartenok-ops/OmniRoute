@@ -2,6 +2,12 @@
 
 const ALPHANUM9 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
+// Fallback streaming tool_call id when a provider response omits one (index optional).
+// `call_<ts>` when no index is given; `call_<index>_<ts>` when an index is supplied.
+export function fallbackToolCallId(index?: number): string {
+  return index === undefined ? `call_${Date.now()}` : `call_${index}_${Date.now()}`;
+}
+
 // Generate unique tool call ID (default long form)
 export function generateToolCallId() {
   return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
@@ -118,7 +124,9 @@ export function hasToolResults(msg, toolCallIds) {
   return false;
 }
 
-// Fix missing tool responses - insert empty tool_result if assistant has tool_use but next message has no tool_result
+// Fix missing tool responses - insert empty tool_result if assistant has tool_use but next message has no tool_result.
+// Inserts in the same shape as the opening assistant message: OpenAI tool_calls → role:"tool";
+// Claude tool_use blocks → role:"user" with tool_result content blocks.
 export function fixMissingToolResponses(body) {
   if (!body.messages || !Array.isArray(body.messages)) return body;
 
@@ -136,18 +144,81 @@ export function fixMissingToolResponses(body) {
 
     // Check if next message has tool_result
     if (nextMsg && !hasToolResults(nextMsg, toolCallIds)) {
-      // Insert tool responses for each tool_call
-      for (const id of toolCallIds) {
-        // OpenAI format: role = "tool"
+      const hasOpenAIToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+      if (hasOpenAIToolCalls) {
+        for (const id of toolCallIds) {
+          newMessages.push({
+            role: "tool",
+            tool_call_id: id,
+            content: "",
+          });
+        }
+      } else {
         newMessages.push({
-          role: "tool",
-          tool_call_id: id,
-          content: "",
+          role: "user",
+          content: toolCallIds.map((id) => ({
+            type: "tool_result",
+            tool_use_id: id,
+            content: "",
+          })),
         });
       }
     }
   }
 
   body.messages = newMessages;
+  return body;
+}
+
+// Strip tool-result carriers whose id has no matching tool call anywhere in the
+// conversation. Mirrors fixMissingToolResponses on the result side: that helper
+// ensures every call has a result; this one ensures every result has a call.
+// Client-side history truncation/compaction can drop the assistant turn that
+// issued a tool call while leaving its stale tool result behind, which strict
+// upstream APIs reject before model execution. Handles both OpenAI-format
+// role:"tool" messages and Claude-format tool_result content blocks. Drops a
+// user message entirely if stripping empties its content array. Returns the
+// same body reference when nothing needs to change (no-op fast path).
+export function stripOrphanedToolResults(body) {
+  if (!body.messages || !Array.isArray(body.messages)) return body;
+
+  const knownCallIds = new Set<string>();
+  for (const msg of body.messages) {
+    for (const id of getToolCallIds(msg)) {
+      knownCallIds.add(id);
+    }
+  }
+
+  let changed = false;
+  const filteredMessages = [];
+
+  for (const msg of body.messages) {
+    if (msg.role === "tool" && msg.tool_call_id) {
+      if (knownCallIds.has(msg.tool_call_id)) {
+        filteredMessages.push(msg);
+      } else {
+        changed = true;
+      }
+      continue;
+    }
+
+    if (Array.isArray(msg.content)) {
+      const cleanedContent = msg.content.filter((block) => {
+        if (block?.type !== "tool_result") return true;
+        return typeof block.tool_use_id === "string" && knownCallIds.has(block.tool_use_id);
+      });
+
+      if (cleanedContent.length !== msg.content.length) {
+        changed = true;
+        if (cleanedContent.length === 0) continue;
+        msg.content = cleanedContent;
+      }
+    }
+
+    filteredMessages.push(msg);
+  }
+
+  if (!changed) return body;
+  body.messages = filteredMessages;
   return body;
 }

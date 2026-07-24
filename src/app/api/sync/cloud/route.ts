@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getApiKeys, createApiKey, updateSettings } from "@/lib/localDb";
+import { getApiKeys, createApiKey, pickApiKeyForInternalUse, updateSettings } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud, fetchWithTimeout, CLOUD_URL } from "@/lib/cloudSync";
 import fs from "fs/promises";
@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import { cloudSyncActionSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
 /**
  * GET /api/sync/cloud
@@ -23,8 +24,9 @@ export async function GET() {
 
     // Cloud is enabled — try to verify connection
     const machineId = await getConsistentMachineId();
-    const keys = await getApiKeys();
-    const apiKey = keys[0]?.key;
+    // Prefer a manage-scoped or allow-all key so the verify ping is not
+    // rejected upstream when keys[0] is a restricted self:usage key.
+    const apiKey = await pickApiKeyForInternalUse("cloud-sync-verify");
 
     if (!apiKey || !CLOUD_URL) {
       return NextResponse.json({ enabled: true, connected: false });
@@ -50,8 +52,8 @@ export async function GET() {
     } catch {
       return NextResponse.json({ enabled: true, connected: false });
     }
-  } catch (error: any) {
-    return NextResponse.json({ enabled: false, error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ enabled: false, error: sanitizeErrorMessage(error) }, { status: 500 });
   }
 }
 
@@ -110,9 +112,9 @@ export async function POST(request: any) {
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.log("Cloud sync error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: sanitizeErrorMessage(error) }, { status: 500 });
   }
 }
 

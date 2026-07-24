@@ -11,6 +11,7 @@ import { jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import { isPublicApiRoute } from "@/shared/constants/publicApiRoutes";
+import { extractApiKey } from "@/sse/services/auth";
 
 type RequestLike = {
   cookies?: {
@@ -52,6 +53,14 @@ function getRequestPathname(request: RequestLike | Request | null | undefined): 
   } catch {
     return null;
   }
+}
+
+function isOnboardingBootstrapPath(pathname: string | null): boolean {
+  return pathname === "/dashboard/onboarding";
+}
+
+function isRequireLoginBootstrapWritePath(pathname: string | null, method: string): boolean {
+  return pathname === "/api/settings/require-login" && method.toUpperCase() === "POST";
 }
 
 function getRequestMethod(request: RequestLike | Request | null | undefined): string {
@@ -130,15 +139,23 @@ function getCookieValueFromHeader(headers: Headers | undefined, name: string): s
   return null;
 }
 
-function getBearerToken(request: RequestLike | Request | null | undefined): string | null {
-  const headers =
-    request && typeof request === "object" && "headers" in request ? request.headers : undefined;
-  const authHeader = headers?.get("authorization") || headers?.get("Authorization");
-  if (typeof authHeader !== "string") return null;
+function getRequestApiKey(
+  request: RequestLike | Request | null | undefined,
+  opts?: { allowUrl?: boolean }
+): string | null {
+  if (!request || typeof request !== "object") return null;
 
-  const trimmedHeader = authHeader.trim();
-  if (!trimmedHeader.toLowerCase().startsWith("bearer ")) return null;
-  return trimmedHeader.slice(7).trim() || null;
+  const headers = "headers" in request ? request.headers : undefined;
+  const rawUrl = "url" in request && typeof request.url === "string" ? request.url : null;
+  const pathname = getRequestPathname(request);
+  const syntheticUrl = rawUrl || (pathname ? `http://localhost${pathname}` : null);
+
+  // Management auth never honours a URL-borne credential (defence-in-depth: the
+  // path-scoped token is a client-API affordance only — a credential in the URL
+  // must not authenticate a management route). See the #3300 security follow-up.
+  const allowUrl = opts?.allowUrl !== false;
+
+  return extractApiKey({ headers, url: allowUrl ? syntheticUrl : null }, { allowUrl });
 }
 
 async function validateBearerApiKey(apiKey: string | null): Promise<boolean> {
@@ -147,6 +164,35 @@ async function validateBearerApiKey(apiKey: string | null): Promise<boolean> {
   try {
     const { validateApiKey } = await import("@/lib/db/apiKeys");
     return await validateApiKey(apiKey);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check whether a Bearer API key is valid AND carries a scope that authorizes
+ * it on management API routes (`/api/*` excluding `/api/v1/*` and the public
+ * allowlist). Returns `false` for unscoped keys so that the existing
+ * default-deny posture on management routes is preserved.
+ *
+ * Scope set is sourced from `@/shared/constants/managementScopes` so this
+ * helper stays in lockstep with `requireManagementAuth.hasManageScope`.
+ */
+async function validateBearerApiKeyForManagement(apiKey: string | null): Promise<boolean> {
+  if (!apiKey) return false;
+
+  try {
+    const [{ validateApiKey, getApiKeyMetadata }, { hasManageScope }] = await Promise.all([
+      import("@/lib/db/apiKeys"),
+      import("@/shared/constants/managementScopes"),
+    ]);
+    const valid = await validateApiKey(apiKey);
+    if (!valid) return false;
+
+    const metadata = await getApiKeyMetadata(apiKey);
+    if (!metadata) return false;
+
+    return hasManageScope(metadata.scopes);
   } catch {
     return false;
   }
@@ -211,12 +257,16 @@ export async function verifyAuth(request: any): Promise<string | null> {
     return null;
   }
 
-  const bearerToken = getBearerToken(request);
-  if (isManagementApiRequest(request)) {
-    return bearerToken ? "Invalid management token" : "Authentication required";
+  const isManagement = isManagementApiRequest(request);
+  const apiKey = getRequestApiKey(request, { allowUrl: !isManagement });
+  if (isManagement) {
+    if (await validateBearerApiKeyForManagement(apiKey)) {
+      return null;
+    }
+    return apiKey ? "Invalid management token" : "Authentication required";
   }
 
-  if (await validateBearerApiKey(bearerToken)) {
+  if (await validateBearerApiKey(apiKey)) {
     return null;
   }
 
@@ -242,11 +292,13 @@ export async function isAuthenticated(request: Request): Promise<boolean> {
     return true;
   }
 
-  if (isManagementApiRequest(request)) {
-    return false;
+  const isManagement = isManagementApiRequest(request);
+  const apiKey = getRequestApiKey(request, { allowUrl: !isManagement });
+  if (isManagement) {
+    return validateBearerApiKeyForManagement(apiKey);
   }
 
-  return validateBearerApiKey(getBearerToken(request));
+  return validateBearerApiKey(apiKey);
 }
 
 /**
@@ -273,7 +325,16 @@ export async function isAuthRequired(
       if (!request) return false;
 
       const pathname = getRequestPathname(request);
-      if (pathname && isPublicApiRoute(pathname, getRequestMethod(request))) {
+      const method = getRequestMethod(request);
+      if (isOnboardingBootstrapPath(pathname)) {
+        return false;
+      }
+
+      if (pathname && isPublicApiRoute(pathname, method)) {
+        return false;
+      }
+
+      if (isRequireLoginBootstrapWritePath(pathname, method)) {
         return false;
       }
 

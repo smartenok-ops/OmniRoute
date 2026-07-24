@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { SignJWT } from "jose";
 import { parse } from "jsonc-parser";
+import * as yaml from "js-yaml";
 const guideSettingsRoute =
   await import("../../src/app/api/cli-tools/guide-settings/[toolId]/route.ts");
 
@@ -12,6 +13,8 @@ const DUMMY_HOME = path.join(os.tmpdir(), "omniroute-qwen-test-" + Date.now());
 const QWEN_CONFIG_PATH = path.join(DUMMY_HOME, ".qwen", "settings.json");
 const QWEN_ENV_PATH = path.join(DUMMY_HOME, ".qwen", ".env");
 const OPENCODE_CONFIG_PATH = path.join(DUMMY_HOME, ".config", "opencode", "opencode.json");
+// cliRuntime.ts hermes entry maps to .config/hermes/config.json (not .hermes/config.yaml)
+const HERMES_CONFIG_PATH = path.join(DUMMY_HOME, ".config", "hermes", "config.json");
 const originalXDG = process.env.XDG_CONFIG_HOME;
 const originalAppData = process.env.APPDATA;
 const originalJwtSecret = process.env.JWT_SECRET;
@@ -71,7 +74,7 @@ test("guide-settings POST creates new qwen settings.json if it doesn't exist", a
   const req = await buildRequest({
     baseUrl: "http://my-omni",
     apiKey: "sk-123",
-    model: "gemini-cli/gemini-3.1-pro-preview",
+    model: "qwen/qwen3-coder-plus",
   });
   const response = (await guideSettingsRoute.POST(req, { params: { toolId: "qwen" } })) as Response;
   const data = (await response.json()) as any;
@@ -84,7 +87,29 @@ test("guide-settings POST creates new qwen settings.json if it doesn't exist", a
   assert.equal(content.security?.auth?.selectedType, "openai");
   assert.ok(content.security?.auth?.apiKey.startsWith("sk-"));
   assert.equal(content.security?.auth?.baseUrl, "http://my-omni");
-  assert.equal(content.model?.name, "gemini-cli/gemini-3.1-pro-preview");
+  assert.equal(content.model?.name, "qwen/qwen3-coder-plus");
+});
+
+test("guide-settings POST creates new hermes config.yaml if it doesn't exist", async () => {
+  const req = await buildRequest({
+    baseUrl: "http://my-omni",
+    apiKey: "sk-hermes",
+    model: "gpt-5.4-mini",
+  });
+  const response = (await guideSettingsRoute.POST(req, {
+    params: { toolId: "hermes" },
+  })) as Response;
+  const data = (await response.json()) as any;
+
+  assert.equal(response.status, 200, "Response should be OK");
+  assert.equal(data.success, true);
+
+  const content = yaml.load(await fs.readFile(HERMES_CONFIG_PATH, "utf-8")) as any;
+  assert.equal(content.model?.default, "gpt-5.4-mini");
+  assert.equal(content.model?.provider, "omniroute");
+  assert.equal(content.model?.base_url, "http://my-omni/v1");
+  assert.equal(content.providers?.omniroute?.base_url, "http://my-omni/v1");
+  assert.ok(String(content.providers?.omniroute?.api_key || "").startsWith("sk-"));
 });
 
 test("guide-settings POST merges into existing qwen settings.json", async () => {
@@ -199,9 +224,9 @@ test("guide-settings POST preserves existing OpenCode config fields while only u
     body: JSON.stringify({
       baseUrl: "http://my-omni/v1",
       apiKey: "sk-123",
-      models: ["cx/gpt-5.4", "opencode-go/kimi-k2.6"],
+      models: ["cx/gpt-5.6-sol", "opencode-go/kimi-k2.6"],
       modelLabels: {
-        "cx/gpt-5.4": "GPT-5.4",
+        "cx/gpt-5.6-sol": "GPT-5.6 Sol",
         "opencode-go/kimi-k2.6": "Kimi K2.6",
       },
     }),
@@ -227,7 +252,7 @@ test("guide-settings POST preserves existing OpenCode config fields while only u
   assert.equal(content.provider.omniroute.options.baseURL, "http://my-omni/v1");
   assert.ok(content.provider.omniroute.options.apiKey.startsWith("sk-"));
   assert.deepEqual(content.provider.omniroute.models, {
-    "cx/gpt-5.4": { name: "GPT-5.4" },
+    "cx/gpt-5.6-sol": { name: "GPT-5.6 Sol" },
     "opencode-go/kimi-k2.6": { name: "Kimi K2.6" },
   });
 });

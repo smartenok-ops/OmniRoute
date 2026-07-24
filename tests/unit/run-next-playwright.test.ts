@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const playwrightRunner = await import("../../scripts/run-next-playwright.mjs");
+const playwrightRunner = await import("../../scripts/dev/run-next-playwright.mjs");
 
 test("resolvePlaywrightAppBackupDir uses a per-run backup when a stale backup already exists", () => {
   const cwd = "/tmp/omniroute-playwright-runner";
@@ -53,6 +53,15 @@ test("shouldUseWebpackForPlaywrightDev only opts into webpack when turbopack is 
     playwrightRunner.shouldUseWebpackForPlaywrightDev({
       mode: "start",
       env: { OMNIROUTE_USE_TURBOPACK: "1" },
+    }),
+    false
+  );
+
+  // Turbopack is the default: an unset env var must NOT fall back to webpack.
+  assert.equal(
+    playwrightRunner.shouldUseWebpackForPlaywrightDev({
+      mode: "dev",
+      env: {},
     }),
     false
   );
