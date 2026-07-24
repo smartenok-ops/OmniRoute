@@ -10,7 +10,6 @@ export const CODEX_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set([
   "tool_search",
   "image_generation",
   "web_search",
-  "web_search_preview",
   "file_search",
   "computer",
   "computer_use_preview",
@@ -41,7 +40,17 @@ export function normalizeCodexTools(
     }
 
     const tool = toolValue as Record<string, unknown>;
-    const toolType = typeof tool.type === "string" ? tool.type : "";
+    let toolType = typeof tool.type === "string" ? tool.type : "";
+
+    // Chat/Anthropic translators can still emit OpenAI's legacy hosted-tool alias
+    // `web_search_preview`. The Codex Responses backend accepts only the canonical
+    // `web_search` type and otherwise rejects the entire request with HTTP 400.
+    // Normalize at the provider boundary so every client format and Codex model gets
+    // the same compatibility behavior without model-specific routing exceptions.
+    if (toolType === "web_search_preview") {
+      tool.type = "web_search";
+      toolType = "web_search";
+    }
 
     // Preserve namespace tools (MCP tool groups used by Codex/OpenAI Responses API).
     // Codex API supports them natively; register sub-tool names for tool_choice validation.
@@ -153,6 +162,9 @@ export function normalizeCodexTools(
     !Array.isArray(body.tool_choice)
   ) {
     const toolChoice = body.tool_choice as Record<string, unknown>;
+    if (toolChoice.type === "web_search_preview") {
+      toolChoice.type = "web_search";
+    }
     if (toolChoice.type === "function") {
       const rawName = typeof toolChoice.name === "string" ? toolChoice.name.trim() : "";
       if (!rawName || !validToolNames.has(rawName)) {

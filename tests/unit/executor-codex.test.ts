@@ -1075,6 +1075,7 @@ test("CodexExecutor.transformRequest preserves namespace MCP tools and hosted to
         { type: "image_generation", output_format: "png" },
         { type: "tool_search" },
         { type: "web_search" },
+        { type: "web_search_preview", search_context_size: "medium" },
         { type: "local_shell" },
         { type: "unknown_hosted_tool" },
       ],
@@ -1091,7 +1092,18 @@ test("CodexExecutor.transformRequest preserves namespace MCP tools and hosted to
     "image_generation",
     "tool_search",
     "web_search",
+    "web_search",
   ]);
+
+  const normalizedPreview = (result.tools as Array<Record<string, unknown>>).filter(
+    (tool) => tool.type === "web_search"
+  )[1];
+  assert.equal(normalizedPreview.search_context_size, "medium");
+  assert.ok(
+    !(result.tools as Array<Record<string, unknown>>).some(
+      (tool) => tool.type === "web_search_preview"
+    )
+  );
 
   const namespaceTool = (result.tools as Array<Record<string, unknown>>).find(
     (tool) => tool.type === "namespace"
@@ -1104,6 +1116,18 @@ test("CodexExecutor.transformRequest preserves namespace MCP tools and hosted to
   const body = { tools: [], tool_choice: { type: "local_shell" } };
   normalizeCodexTools(body);
   assert.equal(body.tool_choice, undefined);
+});
+
+test("normalizeCodexTools canonicalizes legacy web_search_preview tool choice", () => {
+  const body = {
+    tools: [{ type: "web_search_preview", search_context_size: "high" }],
+    tool_choice: { type: "web_search_preview" },
+  };
+
+  normalizeCodexTools(body);
+
+  assert.deepEqual(body.tools, [{ type: "web_search", search_context_size: "high" }]);
+  assert.deepEqual(body.tool_choice, { type: "web_search" });
 });
 
 test("CodexExecutor.transformRequest preserves native Codex custom tools", () => {
