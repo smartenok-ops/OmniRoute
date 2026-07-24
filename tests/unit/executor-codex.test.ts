@@ -339,6 +339,42 @@ test("CodexExecutor.transformRequest normalizes max reasoning_effort to xhigh", 
   assert.equal(result.reasoning_effort, undefined);
 });
 
+test("CodexExecutor.transformRequest normalizes minimal reasoning effort to low", () => {
+  const executor = new CodexExecutor();
+  const result = executor.transformRequest(
+    "gpt-5.6-sol",
+    {
+      model: "gpt-5.6-sol",
+      input: [],
+      reasoning: { effort: "minimal" },
+      _nativeCodexPassthrough: true,
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  assert.equal(result.reasoning.effort, "low");
+});
+
+test("CodexExecutor.transformRequest drops unsupported native Codex parameters", () => {
+  const executor = new CodexExecutor();
+  const result = executor.transformRequest(
+    "gpt-5.6-luna",
+    {
+      model: "gpt-5.6-luna",
+      input: [],
+      temperature: 0.7,
+      reasoning: { effort: "unsupported", summary: "auto" },
+      _nativeCodexPassthrough: true,
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  assert.equal(result.temperature, undefined);
+  assert.deepEqual(result.reasoning, { effort: "medium", summary: "auto" });
+});
+
 test("CodexExecutor.transformRequest sends neutral instructions for bare chat requests", () => {
   const executor = new CodexExecutor();
   const body = {
