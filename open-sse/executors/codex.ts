@@ -386,7 +386,10 @@ const CODEX_DEFAULT_REASONING_SUMMARY = "auto";
 function normalizeEffortValue(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
-  return normalized || undefined;
+  // Some OpenAI-compatible clients use the Chat Completions alias `minimal`.
+  // Codex Responses exposes `low` as its lowest non-zero effort instead.
+  if (normalized === "minimal") return "low";
+  return EFFORT_ORDER.includes(normalized as EffortLevel) ? normalized : undefined;
 }
 
 function ensureCodexReasoningSummary(body: Record<string, unknown>): void {
@@ -1352,6 +1355,11 @@ export class CodexExecutor extends BaseExecutor {
         // Ultra coordinates delegation in Codex clients; the upstream wire effort is Max.
         effort: clampedEffort === "ultra" ? "max" : clampedEffort,
       };
+    } else if (reasoningRecord && "effort" in reasoningRecord) {
+      // Do not forward unknown effort strings to the strict Codex schema.
+      // Drop the reasoning object as its remaining summary fields are only
+      // meaningful when a supported effort is present.
+      delete body.reasoning;
     }
     ensureCodexReasoningSummary(body);
     if (isCompactRequest) {
@@ -1370,6 +1378,7 @@ export class CodexExecutor extends BaseExecutor {
     // both native passthrough and translated requests.
     delete body.truncation;
     delete body.background; // Droid CLI sends this but Codex Responses API rejects it
+    delete body.temperature; // Codex Responses rejects sampling temperature on every request shape
 
     // Issue #3317: strip client-only fields the Codex Responses API rejects with
     // 400 "Unsupported parameter" — for BOTH the native passthrough (early return
