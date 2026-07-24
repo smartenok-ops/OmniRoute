@@ -254,7 +254,7 @@ export default function QuotaCardExpanded({
         </button>
       )}
 
-      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border/40">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pt-1.5 border-t border-border/40">
         {refreshedLabel && (
           <span
             className={`text-[10px] tabular-nums ${
@@ -269,7 +269,7 @@ export default function QuotaCardExpanded({
             {tr("updatedShort", "Updated")} {refreshedLabel}
           </span>
         )}
-        <div className="flex items-center gap-1.5 ml-auto">
+        <div className="flex flex-wrap items-center gap-1 ml-auto">
           {canRedeemResetCredit && (
             <button
               type="button"
@@ -278,7 +278,9 @@ export default function QuotaCardExpanded({
                 e.stopPropagation();
                 onRedeemResetCredit?.();
               }}
-              className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-primary/40 text-primary bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              title={tr("redeemResetCredit", "Redeem reset")}
+              aria-label={tr("redeemResetCredit", "Redeem reset")}
+              className="inline-flex items-center justify-center p-1.5 rounded-md border border-primary/40 text-primary bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
             >
               <span
                 className={`material-symbols-outlined text-[12px] ${
@@ -287,7 +289,6 @@ export default function QuotaCardExpanded({
               >
                 {redeemingResetCredit ? "progress_activity" : "restart_alt"}
               </span>
-              {tr("redeemResetCredit", "Redeem reset")}
             </button>
           )}
           <button
@@ -297,12 +298,13 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onOpenCutoff();
             }}
-            className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
+            title={tr("editCutoffs", "Edit cutoffs")}
+            aria-label={tr("editCutoffs", "Edit cutoffs")}
+            className={`inline-flex items-center justify-center p-1.5 rounded-md border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
               hasCutoffOverrides ? "border-primary/40 text-primary" : "border-border"
             }`}
           >
             <span className="material-symbols-outlined text-[12px]">tune</span>
-            {tr("editCutoffs", "Edit cutoffs")}
           </button>
           <button
             type="button"
@@ -310,10 +312,11 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onOpenCost();
             }}
-            className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] cursor-pointer"
+            title="USD Cost"
+            aria-label="USD Cost"
+            className="inline-flex items-center justify-center p-1.5 rounded-md border border-border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] cursor-pointer"
           >
             <span className="material-symbols-outlined text-[12px]">bar_chart</span>
-            USD Cost
           </button>
           <button
             type="button"
@@ -322,14 +325,15 @@ export default function QuotaCardExpanded({
               e.stopPropagation();
               onRefresh();
             }}
-            className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            title={tr("forceRefresh", "Refresh now")}
+            aria-label={tr("forceRefresh", "Refresh now")}
+            className="inline-flex items-center justify-center text-[11px] font-medium p-1.5 rounded-md border border-border bg-bg-subtle hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             <span
               className={`material-symbols-outlined text-[12px] ${loading ? "animate-spin" : ""}`}
             >
               refresh
             </span>
-            {tr("forceRefresh", "Refresh now")}
           </button>
         </div>
       </div>

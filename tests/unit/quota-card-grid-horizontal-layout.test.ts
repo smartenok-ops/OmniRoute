@@ -1,4 +1,4 @@
-// #3520 — Provider Quota page should use horizontal whitespace better.
+// Provider Quota page should use horizontal whitespace without crushing cards.
 //
 // QuotaCardGrid previously stacked provider groups vertically via a single
 // `flex flex-col` container and kept cards to a conservative 1/2/3/4-column
@@ -97,21 +97,22 @@ function extractDivClassNames(sourcePath: string): string[] {
   return classNames;
 }
 
-test("QuotaCardGrid (#3520) — outer container flows groups into multiple columns, not a single vertical stack", () => {
+test("QuotaCardGrid — outer container stacks provider groups vertically", () => {
   const [outerClassName] = extractDivClassNames(COMPONENT_PATH);
   assert.ok(outerClassName, "expected the component to render an outer <div className=...>");
-  assert.match(outerClassName, /\bcolumns-/);
-  assert.notEqual(outerClassName, "flex flex-col gap-6");
+  assert.match(outerClassName, /\bflex-col\b/);
+  assert.doesNotMatch(outerClassName, /\bcolumns-/);
 });
 
-test("QuotaCardGrid (#3520) — per-group card grid starts multi-column (grid-cols-2), not single-column", () => {
+test("QuotaCardGrid — per-group grid auto-fills cards with a safe minimum width", () => {
   const classNames = extractDivClassNames(COMPONENT_PATH);
   const cardGridClassName = classNames.find(
-    (c) => /\bgrid\b/.test(c) && /grid-cols-/.test(c)
+    (c) => /\bgrid\b/.test(c) && /minmax/.test(c)
   );
   assert.ok(cardGridClassName, "expected to find the per-group card grid's className");
-  assert.match(cardGridClassName!, /\bgrid-cols-2\b/);
-  assert.doesNotMatch(cardGridClassName!, /\bgrid-cols-1\b/);
+  assert.match(cardGridClassName!, /auto-fill/);
+  assert.match(cardGridClassName!, /minmax\(min\(300px,100%\),1fr\)/);
+  assert.doesNotMatch(cardGridClassName!, /\bgrid-cols-\d+\b/);
 });
 
 test("QuotaCardGrid (#3520) — early-returns null when there are no connections", () => {
