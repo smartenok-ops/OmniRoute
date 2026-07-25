@@ -136,7 +136,9 @@ test("Claude max effort support excludes Haiku family and non-Claude IDs", () =>
 test("xhigh effort support defaults to pass-through and opts out explicit false models", () => {
   const claudeModels = new Set(getModelsByProviderId("claude").map((model) => model.id));
 
+  assert.ok(claudeModels.has("claude-opus-5"));
   assert.ok(claudeModels.has("claude-opus-4-8"));
+  assert.equal(supportsXHighEffort("claude", "claude-opus-5"), true);
   assert.equal(supportsXHighEffort("claude", "claude-opus-4-8"), true);
   assert.equal(supportsXHighEffort("claude", "claude-opus-4-7"), true);
   assert.equal(supportsXHighEffort("claude", "claude-opus-4-6"), false);
