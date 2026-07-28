@@ -14,12 +14,14 @@
  * (`if (file.endsWith("check-test-masking.test.ts")) continue;` in
  * scripts/check/check-test-masking.mjs) for precisely this reason — this test
  * asserts evaluateMasking() now applies the same exclusion for its diff-based
- * tautology counters, using the real base(origin/main)/head(HEAD) diff of
+ * tautology counters, against the real current source of
  * tests/unit/check-test-masking.test.ts.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   countTautologies,
@@ -28,16 +30,15 @@ import {
 } from "../../scripts/check/check-test-masking.mjs";
 
 const FILE = "tests/unit/check-test-masking.test.ts";
-
-function git(args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8" });
-}
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("#6634: check-test-masking.test.ts's own tautology fixtures must not self-flag as weakening", () => {
-  // origin/main predates the #6404 fixtures (countBareTautologies/scanBareTautologies
-  // tests) that legitimately embed tautology-pattern literals as string fixtures.
-  const baseSrc = git(["show", "origin/main:" + FILE]);
-  const headSrc = git(["show", "HEAD:" + FILE]);
+  // The Unit Tests job checks out a shallow, single-ref tree where origin/main
+  // is absent. Reading the checked-out source makes this regression test
+  // independent of Git checkout shape. An empty base exercises the strictest
+  // case: every fixture in the current source is considered newly introduced.
+  const baseSrc = "";
+  const headSrc = fs.readFileSync(path.join(REPO_ROOT, FILE), "utf8");
 
   const perFile = [
     {
