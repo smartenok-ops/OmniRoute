@@ -47,6 +47,14 @@ test("GET within the TTL serves the cached payload (identical timestamp)", async
   assert.equal(t2, t1, "a second GET within the TTL must return the cached payload");
 });
 
+test("rich monitoring health remains protected when requireLogin is disabled", async () => {
+  const localDb = await import("../../src/lib/localDb.ts");
+  await localDb.updateSettings({ requireLogin: false });
+  const response = await GET(new Request("http://localhost/api/monitoring/health"));
+  assert.ok([401, 403].includes(response.status));
+  await localDb.updateSettings({ requireLogin: true });
+});
+
 test("cache expires after the TTL — a fresh payload is built", async () => {
   const t1 = await healthTimestamp();
   await new Promise((r) => setTimeout(r, 1100)); // TTL is 1000ms

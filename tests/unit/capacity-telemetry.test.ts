@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getCapacityTelemetrySnapshot,
+  getUnavailableCapacityTelemetrySnapshot,
   recordSemaphoreQueueEvent,
   recordSemaphoreState,
   recordUpstreamCapacityStatus,
@@ -12,6 +13,22 @@ import {
 test.afterEach(() => {
   resetCapacityTelemetry();
   delete process.env.OMNIROUTE_TELEMETRY_HMAC_SECRET;
+});
+
+test("capacity telemetry exposes consistent freshness state", () => {
+  const snapshot = getCapacityTelemetrySnapshot({
+    connections: [],
+    semaphoreStatus: {},
+    rateLimitStatus: {},
+    nowMs: 0,
+  });
+  assert.equal(snapshot.stale, false);
+  assert.equal(snapshot.generatedAt, "1970-01-01T00:00:00.000Z");
+  assert.equal(snapshot.staleAfterSeconds, 5);
+  const unavailable = getUnavailableCapacityTelemetrySnapshot(0);
+  assert.equal(unavailable.stale, true);
+  assert.equal(unavailable.generatedAt, snapshot.generatedAt);
+  assert.equal(unavailable.staleAfterSeconds, snapshot.staleAfterSeconds);
 });
 
 test("capacity telemetry aggregates bounded provider and masked Codex-account capacity signals", () => {
@@ -154,7 +171,7 @@ test("capacity telemetry classifies cooled-down and exhausted accounts without e
   });
   const codex = snapshot.providers["omniroute-codex"] as {
     accounts: { available: number; coolingDown: number; quotaExhausted: number };
-    codexAccounts: Array<{ availability: string }>;
+    codexAccounts: Array<{ availability: string; cooldownReason: string | null }>;
   };
   assert.deepEqual(codex.accounts, {
     configured: 2,
@@ -167,6 +184,10 @@ test("capacity telemetry classifies cooled-down and exhausted accounts without e
     "cooldown",
     "quota_exhausted",
   ]);
+  assert.equal(
+    codex.codexAccounts.find((account) => account.availability === "cooldown")?.cooldownReason,
+    "rate_limited"
+  );
   assert.doesNotMatch(JSON.stringify(snapshot), /cooling-id|exhausted-id/);
 });
 
@@ -196,5 +217,18 @@ test("capacity telemetry distinguishes generic semaphore cooling from rate-limit
       rateLimited: 1,
       quotaExhausted: 0,
     }
+  );
+  const accounts = (
+    snapshot.providers["omniroute-codex"] as {
+      codexAccounts: Array<{ cooldownReason: string | null }>;
+    }
+  ).codexAccounts;
+  assert.equal(
+    accounts.find((account) => account.cooldownReason === "rate_limited")?.cooldownReason,
+    "rate_limited"
+  );
+  assert.equal(
+    accounts.find((account) => account.cooldownReason === "semaphore_blocked")?.cooldownReason,
+    "semaphore_blocked"
   );
 });

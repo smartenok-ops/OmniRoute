@@ -12,6 +12,7 @@ import { createHmac } from "node:crypto";
 const RETENTION_MINUTES = 24 * 60;
 const MAX_PROVIDERS = 128;
 const MAX_CODEX_ACCOUNTS = 64;
+export const CAPACITY_STALE_AFTER_SECONDS = 5;
 const TELEMETRY_HMAC_ENV = "OMNIROUTE_TELEMETRY_HMAC_SECRET";
 const CODEX_PLAN_TYPES = new Set(["free", "plus", "pro", "team", "business", "enterprise", "edu"]);
 
@@ -441,6 +442,14 @@ function codexAccountSnapshot({
     },
     rolling: aggregateBuckets(codexAccountEntries.get(accountKey), nowMs),
     availability: state.availability,
+    cooldownReason:
+      state.rateLimited && state.cooling && (parseDateMs(semaphore?.blockedUntil) ?? 0) > nowMs
+        ? "rate_limited_and_semaphore_blocked"
+        : state.rateLimited
+          ? "rate_limited"
+          : state.cooling
+            ? "semaphore_blocked"
+            : null,
     cooldownUntil: state.cooldownUntil,
     quota: quota
       ? {
@@ -652,7 +661,8 @@ export function getCapacityTelemetrySnapshot({
         : "omitted (configure OMNIROUTE_TELEMETRY_HMAC_SECRET for stable labels)",
     },
     generatedAt: new Date(nowMs).toISOString(),
-    staleAfterSeconds: 5,
+    staleAfterSeconds: CAPACITY_STALE_AFTER_SECONDS,
+    stale: false,
     truncation: {
       providers: allProviders.length > MAX_PROVIDERS,
       maxProviders: MAX_PROVIDERS,
@@ -665,6 +675,22 @@ export function getCapacityTelemetrySnapshot({
       maxCodexAccounts: MAX_CODEX_ACCOUNTS,
     },
     providers: output,
+  };
+}
+
+export function getUnavailableCapacityTelemetrySnapshot(nowMs = Date.now()) {
+  return {
+    generatedAt: new Date(nowMs).toISOString(),
+    staleAfterSeconds: CAPACITY_STALE_AFTER_SECONDS,
+    stale: true,
+    truncation: {
+      providers: false,
+      accounts: false,
+      maxProviders: MAX_PROVIDERS,
+      maxCodexAccounts: MAX_CODEX_ACCOUNTS,
+    },
+    sampling: { unavailable: true },
+    providers: {},
   };
 }
 

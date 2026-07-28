@@ -3,7 +3,7 @@ import { getProviderConnections, getSettings } from "@/lib/localDb";
 import { buildHealthPayload } from "@/lib/monitoring/observability";
 import { APP_CONFIG } from "@/shared/constants/config";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
-import { isAuthenticated } from "@/shared/utils/apiAuth";
+import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 
 /**
  * GET /api/monitoring/health — System health overview
@@ -20,9 +20,8 @@ let healthPayloadCache: { payload: unknown; expiresAt: number } | null = null;
 const HEALTH_PAYLOAD_TTL_MS = 1000;
 
 export async function GET(request: Request) {
-  if (!(await isAuthenticated(request))) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authError = await requireManagementAuth(request, { alwaysRequireAuth: true });
+  if (authError) return authError;
   const cachedNow = Date.now();
   if (healthPayloadCache && cachedNow <= healthPayloadCache.expiresAt) {
     return NextResponse.json(healthPayloadCache.payload);
@@ -158,6 +157,22 @@ export async function GET(request: Request) {
       accountSemaphoreModule.status === "fulfilled"
         ? readHealthValue("account semaphores", () => accountSemaphoreModule.value.getStats(), {})
         : {};
+    const unavailableCapacity = () =>
+      capacityTelemetryModule.status === "fulfilled"
+        ? capacityTelemetryModule.value.getUnavailableCapacityTelemetrySnapshot()
+        : {
+            generatedAt: new Date().toISOString(),
+            staleAfterSeconds: 5,
+            stale: true,
+            truncation: {
+              providers: false,
+              accounts: false,
+              maxProviders: 128,
+              maxCodexAccounts: 64,
+            },
+            sampling: { unavailable: true },
+            providers: {},
+          };
     const capacity =
       capacityTelemetryModule.status === "fulfilled"
         ? readHealthValue(
@@ -169,9 +184,9 @@ export async function GET(request: Request) {
                 rateLimitStatus,
                 quotaSnapshots: quotaMonitorMonitors,
               }),
-            { sampling: { unavailable: true }, providers: {} }
+            unavailableCapacity()
           )
-        : { sampling: { unavailable: true }, providers: {} };
+        : unavailableCapacity();
     const runtime =
       runtimeMetricsModule.status === "fulfilled"
         ? readHealthValue(
@@ -251,7 +266,14 @@ export async function GET(request: Request) {
       lockouts: [],
       quotaMonitor: { ...fallbackQuotaMonitorSummary, monitors: [] },
       sessions: { activeCount: 0, stickyBoundCount: 0, byApiKey: {}, top: [] },
-      capacity: { sampling: { unavailable: true }, providers: {} },
+      capacity: {
+        generatedAt: new Date().toISOString(),
+        staleAfterSeconds: 5,
+        stale: true,
+        truncation: { providers: false, accounts: false, maxProviders: 128, maxCodexAccounts: 64 },
+        sampling: { unavailable: true },
+        providers: {},
+      },
       runtime: {},
       dedup: { inflightRequests: 0 },
     });
@@ -265,9 +287,8 @@ export async function GET(request: Request) {
  * clearing failure counts and persisted state.
  */
 export async function DELETE(request: Request) {
-  if (!(await isAuthenticated(request))) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const authError = await requireManagementAuth(request, { alwaysRequireAuth: true });
+  if (authError) return authError;
 
   try {
     const { resetAllCircuitBreakers, getAllCircuitBreakerStatuses } =
