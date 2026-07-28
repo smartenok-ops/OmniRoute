@@ -122,6 +122,7 @@ export async function executeWithUpstreamStartTimeout<T>({
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let abortListener: (() => void) | null = null;
   let timeoutAbortListener: (() => void) | null = null;
+  let abortRaceListener: (() => void) | null = null;
 
   const abortCombined = (source: AbortSignal) => {
     if (combinedController.signal.aborted) return;
@@ -143,7 +144,8 @@ export async function executeWithUpstreamStartTimeout<T>({
   });
 
   const abortPromise = new Promise<never>((_, reject) => {
-    signal.addEventListener("abort", () => reject(createAbortError(signal)), { once: true });
+    abortRaceListener = () => reject(createAbortError(signal));
+    signal.addEventListener("abort", abortRaceListener, { once: true });
   });
 
   try {
@@ -154,5 +156,6 @@ export async function executeWithUpstreamStartTimeout<T>({
     if (timeoutAbortListener) {
       timeoutController.signal.removeEventListener("abort", timeoutAbortListener);
     }
+    if (abortRaceListener) signal.removeEventListener("abort", abortRaceListener);
   }
 }
