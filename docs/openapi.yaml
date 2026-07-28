@@ -4142,10 +4142,19 @@ paths:
     get:
       tags: [System]
       summary: System health check
-      description: Returns authenticated system health, safe provider and masked Codex-account capacity signals, and cached process metrics. Capacity samples use one-minute buckets with 24-hour in-memory retention; raw account identifiers and credentials are not returned.
+      security:
+        - BearerAuth: []
+        - ManagementSessionAuth: []
+      description: Returns authenticated system health and provider-level capacity telemetry. The public Docker liveness probe is GET /api/health/ping. Capacity samples use one-minute buckets with 24-hour process-local retention; raw account identifiers and model-level aggregation are not returned. Configure OMNIROUTE_TELEMETRY_HMAC_SECRET for stable masked account labels; otherwise labels are omitted.
       responses:
         "200":
           description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringHealthResponse"
+        "401":
+          description: Authentication required
 
   /api/rate-limits:
     get:
@@ -5774,6 +5783,33 @@ components:
               error:
                 type: string
                 example: Unauthorized
+  schemas:
+    MonitoringHealthResponse:
+      type: object
+      required: [status, timestamp, capacity]
+      properties:
+        status: { type: string }
+        timestamp: { type: string, format: date-time }
+        capacity:
+          type: object
+          required: [generatedAt, staleAfterSeconds, truncation, sampling, providers]
+          properties:
+            generatedAt: { type: string, format: date-time }
+            staleAfterSeconds: { type: integer, minimum: 0, example: 5 }
+            truncation:
+              type: object
+              required: [providers, accounts, maxProviders, maxCodexAccounts]
+              properties:
+                providers: { type: boolean }
+                accounts: { type: boolean }
+                maxProviders: { type: integer, example: 128 }
+                maxCodexAccounts: { type: integer, example: 64 }
+            sampling:
+              type: object
+              description: Provider-level, process-local counters. Current fields are point-in-time; rolling fields are one-minute bucket aggregates and reset on restart.
+            providers:
+              type: object
+              additionalProperties: true
     ManagementAuthenticationRequired:
       description: Authentication required for management routes
       content:

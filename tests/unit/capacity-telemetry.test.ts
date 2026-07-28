@@ -11,9 +11,11 @@ import {
 
 test.afterEach(() => {
   resetCapacityTelemetry();
+  delete process.env.OMNIROUTE_TELEMETRY_HMAC_SECRET;
 });
 
 test("capacity telemetry aggregates bounded provider and masked Codex-account capacity signals", () => {
+  process.env.OMNIROUTE_TELEMETRY_HMAC_SECRET = "test-telemetry-secret";
   const semaphoreKey = "codex:raw-connection-id";
   recordSemaphoreState(semaphoreKey, { running: 2, queued: 3 });
   recordSemaphoreQueueEvent(semaphoreKey, "wait", 125);
@@ -40,7 +42,7 @@ test("capacity telemetry aggregates bounded provider and masked Codex-account ca
     },
   });
 
-  const codex = snapshot.providers.codex as {
+  const codex = snapshot.providers["omniroute-codex"] as {
     configuredConcurrencyLimit: number;
     effectiveConcurrencyLimit: number;
     currentInflight: number;
@@ -78,6 +80,19 @@ test("capacity telemetry aggregates bounded provider and masked Codex-account ca
   assert.doesNotMatch(JSON.stringify(snapshot), /raw-connection-id/);
 });
 
+test("capacity telemetry omits account labels without a configured stable secret", () => {
+  const snapshot = getCapacityTelemetrySnapshot({
+    connections: [{ id: "secret-account", provider: "codex", isActive: true }],
+    semaphoreStatus: {},
+    rateLimitStatus: {},
+  });
+  const account = (
+    snapshot.providers["omniroute-codex"] as { codexAccounts: Array<Record<string, unknown>> }
+  ).codexAccounts[0];
+  assert.equal("account" in account, false);
+  assert.doesNotMatch(JSON.stringify(snapshot), /secret-account/);
+});
+
 test("capacity telemetry accepts workspace plan metadata and per-connection rate-limit caps", () => {
   const snapshot = getCapacityTelemetrySnapshot({
     connections: [
@@ -92,7 +107,7 @@ test("capacity telemetry accepts workspace plan metadata and per-connection rate
     semaphoreStatus: {},
     rateLimitStatus: {},
   });
-  const codex = snapshot.providers.codex as {
+  const codex = snapshot.providers["omniroute-codex"] as {
     configuredConcurrencyLimit: number | null;
     effectiveConcurrencyLimit: number | null;
     codexAccounts: Array<{
@@ -137,7 +152,7 @@ test("capacity telemetry classifies cooled-down and exhausted accounts without e
       },
     ],
   });
-  const codex = snapshot.providers.codex as {
+  const codex = snapshot.providers["omniroute-codex"] as {
     accounts: { available: number; coolingDown: number; quotaExhausted: number };
     codexAccounts: Array<{ availability: string }>;
   };
@@ -153,4 +168,33 @@ test("capacity telemetry classifies cooled-down and exhausted accounts without e
     "quota_exhausted",
   ]);
   assert.doesNotMatch(JSON.stringify(snapshot), /cooling-id|exhausted-id/);
+});
+
+test("capacity telemetry distinguishes generic semaphore cooling from rate-limited cooldown", () => {
+  const snapshot = getCapacityTelemetrySnapshot({
+    nowMs: Date.parse("2026-07-28T10:00:00.000Z"),
+    connections: [
+      { id: "rate", provider: "codex", rateLimitedUntil: "2026-07-28T10:05:00.000Z" },
+      { id: "blocked", provider: "codex" },
+    ],
+    semaphoreStatus: {
+      "codex:blocked": {
+        running: 0,
+        queued: 0,
+        maxConcurrency: 1,
+        blockedUntil: "2026-07-28T10:05:00.000Z",
+      },
+    },
+    rateLimitStatus: {},
+  });
+  assert.deepEqual(
+    (snapshot.providers["omniroute-codex"] as { accounts: Record<string, number> }).accounts,
+    {
+      configured: 2,
+      available: 0,
+      coolingDown: 2,
+      rateLimited: 1,
+      quotaExhausted: 0,
+    }
+  );
 });

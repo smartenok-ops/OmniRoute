@@ -941,7 +941,7 @@ Compression: aggressive (~50%) → double your free quota · Cost: $0/mo
 | Providers | ![Providers](docs/screenshots/01-providers.png) | Combos | ![Combos](docs/screenshots/02-combos.png) |
 | Analytics | ![Analytics](docs/screenshots/03-analytics.png) | Health | ![Health](docs/screenshots/04-health.png) |
 
-`GET /api/monitoring/health` provides authenticated, low-cardinality capacity telemetry for planning. It reports provider and masked Codex-account limits, current queue/in-flight state, one-minute-bucket rolling windows (up to 24 hours), and cached process/database metrics without returning raw account identifiers or credentials.
+`GET /api/monitoring/health` provides authenticated, low-cardinality, provider-level capacity telemetry for planning. The public `GET /api/health/ping` endpoint remains the Docker liveness probe. Capacity includes current queue/in-flight state and one-minute-bucket rolling windows (up to 24 hours), with `generatedAt`, `staleAfterSeconds`, and truncation metadata. Counters are process-local and reset on restart; they are not model-level or multi-replica aggregates. Raw account identifiers are omitted unless `OMNIROUTE_TELEMETRY_HMAC_SECRET` is configured, which enables stable HMAC labels.
 | Translator | ![Translator](docs/screenshots/05-translator.png) | Settings | ![Settings](docs/screenshots/06-settings.png) |
 | CLI Tools | ![CLI Tools](docs/screenshots/07-cli-tools.png) | Usage Logs | ![Usage](docs/screenshots/08-usage.png) |
 

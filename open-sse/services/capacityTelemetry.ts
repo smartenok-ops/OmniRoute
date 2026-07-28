@@ -7,12 +7,12 @@
  * represented in snapshots with a per-process HMAC label.
  */
 
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 
 const RETENTION_MINUTES = 24 * 60;
 const MAX_PROVIDERS = 128;
 const MAX_CODEX_ACCOUNTS = 64;
-const MASK_KEY = randomBytes(32);
+const TELEMETRY_HMAC_ENV = "OMNIROUTE_TELEMETRY_HMAC_SECRET";
 const CODEX_PLAN_TYPES = new Set(["free", "plus", "pro", "team", "business", "enterprise", "edu"]);
 
 type Bucket = {
@@ -233,8 +233,15 @@ export function getActiveUpstreamCapacityCounts(): {
   return { activeUpstreamAttempts: activeAttempts.size, activeUpstreamStreams };
 }
 
-function maskAccount(accountKey: string): string {
-  return `codex-${createHmac("sha256", MASK_KEY).update(accountKey).digest("hex").slice(0, 10)}`;
+function maskAccount(accountKey: string): string | null {
+  const secret = process.env[TELEMETRY_HMAC_ENV]?.trim();
+  if (!secret) return null;
+  return `codex-${createHmac("sha256", secret).update(accountKey).digest("hex").slice(0, 10)}`;
+}
+
+/** Stable external provider names; these are not model-level labels. */
+function externalProviderName(provider: string): string {
+  return provider === "codex" ? "omniroute-codex" : provider;
 }
 
 function parseDateMs(value: unknown): number | null {
@@ -385,7 +392,8 @@ function availabilityForConnection(
   const cooldownUntilMs = parseDateMs(connection.rateLimitedUntil);
   const blockedUntilMs = parseDateMs(semaphore?.blockedUntil);
   const exhausted = quota?.status === "exhausted";
-  const cooling = (cooldownUntilMs ?? 0) > nowMs || (blockedUntilMs ?? 0) > nowMs;
+  const rateLimited = (cooldownUntilMs ?? 0) > nowMs;
+  const cooling = rateLimited || (blockedUntilMs ?? 0) > nowMs;
   const inactive = connection.isActive === false;
   const availability = inactive
     ? "inactive"
@@ -397,7 +405,7 @@ function availabilityForConnection(
   const cooldownUntil = cooling
     ? new Date(Math.max(cooldownUntilMs ?? 0, blockedUntilMs ?? 0)).toISOString()
     : null;
-  return { cooling, exhausted, inactive, availability, cooldownUntil };
+  return { cooling, rateLimited, exhausted, inactive, availability, cooldownUntil };
 }
 
 function codexAccountSnapshot({
@@ -419,8 +427,9 @@ function codexAccountSnapshot({
 }) {
   const rateLimitDepth = rateLimitQueueDepthForAccount("codex", accountKey, rateLimitStatus);
   const state = availabilityForConnection(connection, semaphore, quota, nowMs);
+  const maskedAccount = maskAccount(accountKey);
   return {
-    account: maskAccount(accountKey),
+    ...(maskedAccount ? { account: maskedAccount } : {}),
     planType: planType(connection.providerSpecificData),
     configuredConcurrencyLimit: configuredConcurrencyLimit(connection),
     effectiveConcurrencyLimit: effectiveLimit(connection, current),
@@ -476,7 +485,7 @@ function providerNames({
       if (parts) providers.add(parts.provider);
     }
   }
-  return [...providers].sort().slice(0, MAX_PROVIDERS);
+  return [...providers].sort();
 }
 
 function accountState(
@@ -511,10 +520,12 @@ function providerAccountSummary({
   let available = 0;
   let coolingDown = 0;
   let quotaExhausted = 0;
+  let rateLimited = 0;
   for (const connection of providerConnections) {
     const account = accountState(connection, current, quotaByAccount, nowMs);
     const { accountKey, semaphore, quota, state } = account;
     if (state.cooling) coolingDown += 1;
+    if (state.rateLimited) rateLimited += 1;
     if (state.exhausted) quotaExhausted += 1;
     if (!state.inactive && !state.cooling && !state.exhausted) available += 1;
     if (provider === "codex" && accountKey) {
@@ -531,7 +542,7 @@ function providerAccountSummary({
       );
     }
   }
-  return { available, coolingDown, quotaExhausted, codexAccounts };
+  return { available, coolingDown, rateLimited, quotaExhausted, codexAccounts };
 }
 
 function providerSnapshot({
@@ -578,7 +589,7 @@ function providerSnapshot({
       configured: providerConnections.length,
       available: accountSummary.available,
       coolingDown: accountSummary.coolingDown,
-      rateLimited: accountSummary.coolingDown,
+      rateLimited: accountSummary.rateLimited,
       quotaExhausted: accountSummary.quotaExhausted,
     },
   };
@@ -601,9 +612,11 @@ export function getCapacityTelemetrySnapshot({
   nowMs?: number;
 }) {
   const quotaByAccount = quotaSnapshotsByAccount(quotaSnapshots);
+  const allProviders = providerNames({ connections, semaphoreStatus, rateLimitStatus });
   const output: Record<string, unknown> = {};
-  for (const provider of providerNames({ connections, semaphoreStatus, rateLimitStatus })) {
-    output[provider] = providerSnapshot({
+  const selectedProviders = allProviders.slice(0, MAX_PROVIDERS);
+  for (const provider of selectedProviders) {
+    const snapshot = providerSnapshot({
       provider,
       connections,
       semaphoreStatus,
@@ -611,6 +624,16 @@ export function getCapacityTelemetrySnapshot({
       quotaByAccount,
       nowMs,
     });
+    const providerConnections = connections.filter(
+      (connection) => connection.provider === provider
+    );
+    if (provider === "codex" && providerConnections.length > MAX_CODEX_ACCOUNTS) {
+      const accounts = snapshot.accounts as Record<string, unknown>;
+      snapshot.codexAccounts = (snapshot.codexAccounts as unknown[]).slice(0, MAX_CODEX_ACCOUNTS);
+      accounts.truncated = true;
+      accounts.returned = MAX_CODEX_ACCOUNTS;
+    }
+    output[externalProviderName(provider)] = snapshot;
   }
 
   return {
@@ -620,6 +643,26 @@ export function getCapacityTelemetrySnapshot({
       maxProviders: MAX_PROVIDERS,
       maxCodexAccounts: MAX_CODEX_ACCOUNTS,
       upstreamErrorCount: "upstream attempts with 429, 502, or 503 responses",
+      counterSemantics:
+        "current fields are point-in-time; rolling fields aggregate process-local one-minute buckets",
+      scope:
+        "provider-level and process-local; no model-level aggregation; values reset on restart and are not cluster-wide",
+      accountIdentifiers: process.env[TELEMETRY_HMAC_ENV]?.trim()
+        ? "stable HMAC labels"
+        : "omitted (configure OMNIROUTE_TELEMETRY_HMAC_SECRET for stable labels)",
+    },
+    generatedAt: new Date(nowMs).toISOString(),
+    staleAfterSeconds: 5,
+    truncation: {
+      providers: allProviders.length > MAX_PROVIDERS,
+      maxProviders: MAX_PROVIDERS,
+      accounts: selectedProviders.some(
+        (provider) =>
+          provider === "codex" &&
+          connections.filter((connection) => connection.provider === provider).length >
+            MAX_CODEX_ACCOUNTS
+      ),
+      maxCodexAccounts: MAX_CODEX_ACCOUNTS,
     },
     providers: output,
   };

@@ -67,7 +67,7 @@ test("isPublicRoute recognizes allowed API prefixes", () => {
   assert.equal(apiAuth.isPublicRoute("/api/auth/login"), true);
   assert.equal(apiAuth.isPublicRoute("/api/v1/chat/completions"), true);
   assert.equal(apiAuth.isPublicRoute("/api/sync/bundle"), true);
-  assert.equal(apiAuth.isPublicRoute("/api/monitoring/health", "GET"), true);
+  assert.equal(apiAuth.isPublicRoute("/api/monitoring/health", "GET"), false);
   assert.equal(apiAuth.isPublicRoute("/api/monitoring/health", "DELETE"), false);
   assert.equal(apiAuth.isPublicRoute("/api/settings"), false);
 });

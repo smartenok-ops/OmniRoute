@@ -26,11 +26,7 @@ const PUBLIC_API_ROUTE_PREFIXES = [
   "/api/skills/collect/chaos",
 ];
 
-const PUBLIC_READONLY_API_ROUTE_PREFIXES = [
-  "/api/health/ping",
-  "/api/monitoring/health",
-  "/api/settings/require-login",
-];
+const PUBLIC_READONLY_API_ROUTE_PREFIXES = ["/api/health/ping", "/api/settings/require-login"];
 
 const PUBLIC_READONLY_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
