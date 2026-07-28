@@ -271,6 +271,7 @@ import {
   acquire as acquireAccountSemaphore,
   markBlocked as markAccountSemaphoreBlocked,
 } from "../services/accountSemaphore.ts";
+import { beginUpstreamCapacityAttempt } from "../services/capacityTelemetry.ts";
 import { lockModel, lockModelIfPerModelQuota } from "../services/accountFallback.ts";
 import {
   generateSignature,
@@ -2349,6 +2350,8 @@ export async function handleChatCore({
               stage: "waiting_rate_limit",
             });
 
+            let finishUpstreamCapacityAttempt: ((status?: number) => void) | null = null;
+
             try {
               trace("pre_rate_limit", { connectionId: attemptConnectionId });
               const rawExecutorResult = await withRateLimit(
@@ -2359,6 +2362,11 @@ export async function handleChatCore({
                   trace("inside_rate_limit", { connectionId: attemptConnectionId });
                   updatePendingScope(pendingScope, {
                     stage: "rate_limit_slot_acquired",
+                  });
+                  finishUpstreamCapacityAttempt = beginUpstreamCapacityAttempt({
+                    provider,
+                    accountKey: attemptConnectionId,
+                    stream,
                   });
                   return executeWithUpstreamStartTimeout({
                     executor,
@@ -2419,6 +2427,7 @@ export async function handleChatCore({
                 if (bodyPeek.toLowerCase().includes("exceeded your current quota")) {
                   const delay = 1500 * (attempts + 1);
                   log?.warn?.("QWEN_RETRY", `Quota 429 hit. Retrying in ${delay}ms...`);
+                  finishUpstreamCapacityAttempt?.(res.response.status);
                   releaseAccountSemaphore();
                   await new Promise((r) => setTimeout(r, delay));
                   attempts++;
@@ -2439,6 +2448,7 @@ export async function handleChatCore({
                     "MODELSCOPE_RETRY",
                     `429 ${decision.kind}; retrying in ${delay}ms (model remaining: ${decision.snapshot.modelRemaining ?? "unknown"})`
                   );
+                  finishUpstreamCapacityAttempt?.(res.response.status);
                   releaseAccountSemaphore();
                   await new Promise((r) => setTimeout(r, delay));
                   attempts++;
@@ -2516,6 +2526,7 @@ export async function handleChatCore({
 
                 if (!nextCreds || nextCreds.allRateLimited) {
                   log?.warn?.("CODEX_FAILOVER", "No more codex accounts available — returning 429");
+                  finishUpstreamCapacityAttempt?.(res.response.status);
                   if (stream) {
                     releaseAccountSemaphore();
                     return {
@@ -2527,6 +2538,7 @@ export async function handleChatCore({
                     ...res,
                     _accountSemaphoreRelease: releaseAccountSemaphore,
                     _executionCredentials: execCreds,
+                    _capacityAttemptFinalize: finishUpstreamCapacityAttempt,
                   };
                 }
 
@@ -2551,6 +2563,7 @@ export async function handleChatCore({
                 // Update credentials in-place so getExecutionCredentials() picks up the new account
                 Object.assign(credentials, nextCreds);
 
+                finishUpstreamCapacityAttempt?.(res.response.status);
                 releaseAccountSemaphore();
                 attempts++;
                 continue;
@@ -2560,6 +2573,7 @@ export async function handleChatCore({
               if (stream) {
                 const originalBody = res.response.body;
                 if (!originalBody) {
+                  finishUpstreamCapacityAttempt?.(res.response.status);
                   releaseAccountSemaphore();
                   return res;
                 }
@@ -2665,7 +2679,10 @@ export async function handleChatCore({
                     originalBody as ReadableStream<Uint8Array>,
                     () => runUpstreamStream(bodyToSend),
                     {
-                      finalize: releaseAccountSemaphore,
+                      finalize: () => {
+                        releaseAccountSemaphore();
+                        finishUpstreamCapacityAttempt?.(res.response.status);
+                      },
                       onRetry: (attempt, err) =>
                         log?.warn?.(
                           "STREAM_RECOVERY",
@@ -2682,10 +2699,10 @@ export async function handleChatCore({
                     }
                   );
                 } else {
-                  clientBody = wrapReadableStreamWithFinalize(
-                    originalBody,
-                    releaseAccountSemaphore
-                  );
+                  clientBody = wrapReadableStreamWithFinalize(originalBody, () => {
+                    releaseAccountSemaphore();
+                    finishUpstreamCapacityAttempt?.(res.response.status);
+                  });
                 }
 
                 return {
@@ -2703,8 +2720,10 @@ export async function handleChatCore({
                 ...res,
                 _executionCredentials: execCreds,
                 _accountSemaphoreRelease: releaseAccountSemaphore,
+                _capacityAttemptFinalize: finishUpstreamCapacityAttempt,
               };
             } catch (error) {
+              finishUpstreamCapacityAttempt?.();
               releaseAccountSemaphore();
               throw error;
             }
@@ -2729,6 +2748,13 @@ export async function handleChatCore({
           typeof rawResult._accountSemaphoreRelease === "function"
             ? rawResult._accountSemaphoreRelease
             : () => {};
+        const finalizeRawResultCapacityAttempt =
+          typeof rawResult._capacityAttemptFinalize === "function"
+            ? rawResult._capacityAttemptFinalize
+            : () => {};
+        // A non-stream upstream request has finished once its response is
+        // available; local body materialization below is not upstream work.
+        finalizeRawResultCapacityAttempt(status);
 
         const statusText = rawResult.response.statusText;
         const headersObj = normalizeHeaders(rawResult.response.headers);
@@ -3339,7 +3365,13 @@ export async function handleChatCore({
           // otherwise degenerate into a 429 rate-limit storm). Connection stays
           // active since only the specific model is unavailable. (#6827)
           const notFoundCooldownMs = COOLDOWN_MS.notFound;
-          lockModel(provider, errorConnectionId, currentModel, "model_not_found", notFoundCooldownMs);
+          lockModel(
+            provider,
+            errorConnectionId,
+            currentModel,
+            "model_not_found",
+            notFoundCooldownMs
+          );
           console.warn(
             `[provider] Node ${errorConnectionId} model not found (${statusCode}) for ${currentModel} - locking model for ${Math.ceil(notFoundCooldownMs / 1000)}s (connection stays active)`
           );

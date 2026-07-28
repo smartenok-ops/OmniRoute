@@ -569,18 +569,18 @@ claude mcp add-server omniroute --type http --url http://localhost:20128/api/mcp
 
 Engines run in pipeline order; each is independently toggleable and configurable per combo:
 
-| #   | Engine            | What it does                                                        |
-| --- | ----------------- | ------------------------------------------------------------------- |
-| 1   | **Session-Dedup** | Drops content repeated across turns (content-addressed, cross-turn) |
-| 2   | **CCR**           | Archives large blocks behind retrieve markers, fetched on demand    |
-| 3   | **RTK**           | Smart tool-result filtering, dedup & truncation (command-aware)     |
+| #   | Engine            | What it does                                                                                                            |
+| --- | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Session-Dedup** | Drops content repeated across turns (content-addressed, cross-turn)                                                     |
+| 2   | **CCR**           | Archives large blocks behind retrieve markers, fetched on demand                                                        |
+| 3   | **RTK**           | Smart tool-result filtering, dedup & truncation (command-aware)                                                         |
 | 4   | **Headroom**      | Lossless tabular compaction of homogeneous JSON arrays, flat or nested (~30%), via a vendored **GCF** codec (spec v3.2) |
-| 5   | **Relevance**     | Extractive sentence scoring against the last user query             |
-| 6   | **Caveman**       | Rule-based prose compression (~65–75% on output)                    |
-| 7   | **LLMLingua-2**   | ML semantic pruning via MobileBERT ONNX — code-safe, async          |
-| 8   | **Lite**          | Whitespace + image-URL trimming (latency-light baseline)            |
-| 9   | **Aggressive**    | Summarization + progressive aging of old turns                      |
-| 10  | **Ultra**         | Heuristic token pruning with an optional small-model (SLM) tier     |
+| 5   | **Relevance**     | Extractive sentence scoring against the last user query                                                                 |
+| 6   | **Caveman**       | Rule-based prose compression (~65–75% on output)                                                                        |
+| 7   | **LLMLingua-2**   | ML semantic pruning via MobileBERT ONNX — code-safe, async                                                              |
+| 8   | **Lite**          | Whitespace + image-URL trimming (latency-light baseline)                                                                |
+| 9   | **Aggressive**    | Summarization + progressive aging of old turns                                                                          |
+| 10  | **Ultra**         | Heuristic token pruning with an optional small-model (SLM) tier                                                         |
 
 Code blocks, URLs and structured data are **always preserved** byte-perfect. **One-click presets** combine the engines:
 
@@ -936,12 +936,14 @@ Compression: aggressive (~50%) → double your free quota · Cost: $0/mo
 
 <br/>
 
-| Page       | Screenshot                                        | Page       | Screenshot                                    |
-| ---------- | ------------------------------------------------- | ---------- | --------------------------------------------- |
-| Providers  | ![Providers](docs/screenshots/01-providers.png)   | Combos     | ![Combos](docs/screenshots/02-combos.png)     |
-| Analytics  | ![Analytics](docs/screenshots/03-analytics.png)   | Health     | ![Health](docs/screenshots/04-health.png)     |
-| Translator | ![Translator](docs/screenshots/05-translator.png) | Settings   | ![Settings](docs/screenshots/06-settings.png) |
-| CLI Tools  | ![CLI Tools](docs/screenshots/07-cli-tools.png)   | Usage Logs | ![Usage](docs/screenshots/08-usage.png)       |
+| Page      | Screenshot                                      | Page   | Screenshot                                |
+| --------- | ----------------------------------------------- | ------ | ----------------------------------------- |
+| Providers | ![Providers](docs/screenshots/01-providers.png) | Combos | ![Combos](docs/screenshots/02-combos.png) |
+| Analytics | ![Analytics](docs/screenshots/03-analytics.png) | Health | ![Health](docs/screenshots/04-health.png) |
+
+`GET /api/monitoring/health` provides authenticated, low-cardinality capacity telemetry for planning. It reports provider and masked Codex-account limits, current queue/in-flight state, one-minute-bucket rolling windows (up to 24 hours), and cached process/database metrics without returning raw account identifiers or credentials.
+| Translator | ![Translator](docs/screenshots/05-translator.png) | Settings | ![Settings](docs/screenshots/06-settings.png) |
+| CLI Tools | ![CLI Tools](docs/screenshots/07-cli-tools.png) | Usage Logs | ![Usage](docs/screenshots/08-usage.png) |
 
 </details>
 
@@ -1028,7 +1030,7 @@ Compression: aggressive (~50%) → double your free quota · Cost: $0/mo
 | [Compression Rules Format](docs/compression/COMPRESSION_RULES_FORMAT.md)     | JSON rule-pack schemas for Caveman and RTK filters                            |
 | [Compression Language Packs](docs/compression/COMPRESSION_LANGUAGE_PACKS.md) | Language detection and Caveman rule-pack authoring                            |
 | [Resilience Guide](docs/architecture/RESILIENCE_GUIDE.md)                    | Circuit breakers, cooldowns, queue, anti-thundering herd, TLS spoofing        |
-| [Auto-Combo Engine](docs/routing/AUTO-COMBO.md)                              | 12-factor scoring, mode packs, self-healing                                    |
+| [Auto-Combo Engine](docs/routing/AUTO-COMBO.md)                              | 12-factor scoring, mode packs, self-healing                                   |
 | [Proxy Guide](docs/ops/PROXY_GUIDE.md)                                       | 3-level proxy system, 1proxy marketplace, registry CRUD                       |
 | [Free Tiers](docs/reference/FREE_TIERS.md)                                   | 25+ free API providers consolidated directory                                 |
 | [Features Gallery](docs/guides/FEATURES.md)                                  | Visual dashboard tour with screenshots                                        |
@@ -1216,7 +1218,7 @@ OmniRoute stands on the shoulders of giants. It started as a fork of **[9router]
 | Project                                                                                        |    ⭐ | How it inspired OmniRoute                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------- | ----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[TOON](https://github.com/toon-format/toon)** · toon-format                                  | 24.7k | Token-Oriented Object Notation — its columnar, header-plus-rows model shaped our tabular compaction stage.                                                                                                     |
-| **[GCF – Graph Compact Format](https://github.com/blackwell-systems/gcf)** · Blackwell Systems |    14 | First inspired our tabular compaction stage; now its zero-dependency, lossless generic-profile encoder is **vendored directly** as the Headroom codec (MIT, SPDX-marked), current with GCF spec v3.2. |
+| **[GCF – Graph Compact Format](https://github.com/blackwell-systems/gcf)** · Blackwell Systems |    14 | First inspired our tabular compaction stage; now its zero-dependency, lossless generic-profile encoder is **vendored directly** as the Headroom codec (MIT, SPDX-marked), current with GCF spec v3.2.          |
 | **[token-optimizer-mcp](https://github.com/ooples/token-optimizer-mcp)** · ooples              |   421 | Brotli/SQLite cache + per-session context-delta — inspired our `session-dedup` engine.                                                                                                                         |
 | **[token-savior](https://github.com/Mibayy/token-savior)** · Mibayy                            |  1.0k | Bash-output compaction + MCP profiles — inspired our compression bail-out discipline and MCP tool-manifest reduction.                                                                                          |
 | **[token-saver](https://github.com/ppgranger/token-saver)** · ppgranger                        |   110 | Content-aware, per-file-type output compression with failure-aware bail-out — validated our per-type dispatch and minimum-gain skip.                                                                           |

@@ -1,0 +1,1 @@
+- **feat(health):** add safe, bounded provider and masked Codex-account capacity telemetry to `GET /api/monitoring/health`, including queue/in-flight peaks, capacity rejections, upstream 429/502/503 counts, availability/quota state, and cached process/database metrics.

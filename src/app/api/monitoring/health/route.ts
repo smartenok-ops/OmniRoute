@@ -19,7 +19,10 @@ import { isAuthenticated } from "@/shared/utils/apiAuth";
 let healthPayloadCache: { payload: unknown; expiresAt: number } | null = null;
 const HEALTH_PAYLOAD_TTL_MS = 1000;
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!(await isAuthenticated(request))) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const cachedNow = Date.now();
   if (healthPayloadCache && cachedNow <= healthPayloadCache.expiresAt) {
     return NextResponse.json(healthPayloadCache.payload);
@@ -56,6 +59,9 @@ export async function GET() {
       sessionManagerModule,
       credentialHealthModule,
       localHealthModule,
+      accountSemaphoreModule,
+      capacityTelemetryModule,
+      runtimeMetricsModule,
       settingsResult,
       connectionsResult,
     ] = await Promise.allSettled([
@@ -67,6 +73,9 @@ export async function GET() {
       import("@omniroute/open-sse/services/sessionManager.ts"),
       import("@/lib/credentialHealth/cache"),
       import("@/lib/localHealthCheck"),
+      import("@omniroute/open-sse/services/accountSemaphore.ts"),
+      import("@omniroute/open-sse/services/capacityTelemetry.ts"),
+      import("@/lib/monitoring/runtimeMetrics"),
       getSettings(),
       getProviderConnections(),
     ]);
@@ -145,6 +154,60 @@ export async function GET() {
         : {};
     const settings = settingsResult.status === "fulfilled" ? settingsResult.value : {};
     const connections = connectionsResult.status === "fulfilled" ? connectionsResult.value : [];
+    const semaphoreStatus =
+      accountSemaphoreModule.status === "fulfilled"
+        ? readHealthValue("account semaphores", () => accountSemaphoreModule.value.getStats(), {})
+        : {};
+    const capacity =
+      capacityTelemetryModule.status === "fulfilled"
+        ? readHealthValue(
+            "capacity telemetry",
+            () =>
+              capacityTelemetryModule.value.getCapacityTelemetrySnapshot({
+                connections,
+                semaphoreStatus,
+                rateLimitStatus,
+                quotaSnapshots: quotaMonitorMonitors,
+              }),
+            { sampling: { unavailable: true }, providers: {} }
+          )
+        : { sampling: { unavailable: true }, providers: {} };
+    const runtime =
+      runtimeMetricsModule.status === "fulfilled"
+        ? readHealthValue(
+            "runtime metrics",
+            () => {
+              const upstreamActivity =
+                capacityTelemetryModule.status === "fulfilled"
+                  ? capacityTelemetryModule.value.getActiveUpstreamCapacityCounts()
+                  : { activeUpstreamAttempts: 0, activeUpstreamStreams: 0 };
+              return runtimeMetricsModule.value.getRuntimeMetrics({
+                activeAccountSlots: Object.values(semaphoreStatus).reduce(
+                  (total, item) => total + item.running,
+                  0
+                ),
+                pendingAccountSlots: Object.values(semaphoreStatus).reduce(
+                  (total, item) => total + item.queued,
+                  0
+                ),
+                pendingRateLimitRequests: Object.values(rateLimitStatus).reduce(
+                  (total, item) => total + (item.queued || 0),
+                  0
+                ),
+                pendingDeduplicatedRequests:
+                  requestDedupModule.status === "fulfilled"
+                    ? readHealthValue(
+                        "inflight requests",
+                        () => requestDedupModule.value.getInflightCount(),
+                        0
+                      )
+                    : 0,
+                ...upstreamActivity,
+              });
+            },
+            {}
+          )
+        : {};
 
     const payload = buildHealthPayload({
       appVersion: APP_CONFIG.version,
@@ -169,6 +232,8 @@ export async function GET() {
       activeSessions,
       activeSessionsByKey,
       credentialHealth,
+      capacity,
+      runtime,
     });
 
     healthPayloadCache = { payload, expiresAt: Date.now() + HEALTH_PAYLOAD_TTL_MS };
@@ -186,6 +251,8 @@ export async function GET() {
       lockouts: [],
       quotaMonitor: { ...fallbackQuotaMonitorSummary, monitors: [] },
       sessions: { activeCount: 0, stickyBoundCount: 0, byApiKey: {}, top: [] },
+      capacity: { sampling: { unavailable: true }, providers: {} },
+      runtime: {},
       dedup: { inflightRequests: 0 },
     });
   }

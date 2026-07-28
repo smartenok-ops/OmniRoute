@@ -88,10 +88,68 @@ interface BuildHealthPayloadOptions {
     unknown: number;
     stale: number;
   };
+  capacity?: JsonRecord;
+  runtime?: JsonRecord;
 }
 
-function limitMonitors(monitors: QuotaMonitorSnapshot[], maxItems = 8): QuotaMonitorSnapshot[] {
-  return monitors.slice(0, maxItems);
+function providerFromScopedKey(key: string): string {
+  const separator = key.indexOf(":");
+  return separator > 0 ? key.slice(0, separator) : key || "unknown";
+}
+
+function safeProviderLabel(value: string): string {
+  return (
+    providerFromScopedKey(value)
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 64) || "unknown"
+  );
+}
+
+function summarizeRateLimitStatus(status: JsonRecord): JsonRecord {
+  const providers: Record<
+    string,
+    { scopes: number; queued: number; running: number; executing: number }
+  > = {};
+  for (const [key, value] of Object.entries(status)) {
+    const provider = providerFromScopedKey(key);
+    const bucket = (providers[provider] ??= { scopes: 0, queued: 0, running: 0, executing: 0 });
+    const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    bucket.scopes += 1;
+    bucket.queued += typeof item.queued === "number" ? item.queued : 0;
+    bucket.running += typeof item.running === "number" ? item.running : 0;
+    bucket.executing += typeof item.executing === "number" ? item.executing : 0;
+  }
+  return providers;
+}
+
+function summarizeScopedEntries(entries: JsonRecord): JsonRecord {
+  const providers: Record<string, { entries: number }> = {};
+  for (const key of Object.keys(entries ?? {})) {
+    const provider = providerFromScopedKey(key);
+    (providers[provider] ??= { entries: 0 }).entries += 1;
+  }
+  return providers;
+}
+
+function sanitizeQuotaMonitors(monitors: QuotaMonitorSnapshot[], maxItems = 8) {
+  return monitors.slice(0, maxItems).map((monitor) => ({
+    provider: monitor.provider,
+    status: monitor.status,
+    startedAt: monitor.startedAt,
+    lastPolledAt: monitor.lastPolledAt,
+    lastSuccessAt: monitor.lastSuccessAt,
+    lastErrorAt: monitor.lastErrorAt,
+    lastQuotaPercent: monitor.lastQuotaPercent,
+    lastQuotaUsed: monitor.lastQuotaUsed,
+    lastQuotaTotal: monitor.lastQuotaTotal,
+    lastResetAt: monitor.lastResetAt,
+    lastAlertAt: monitor.lastAlertAt,
+    nextPollDelayMs: monitor.nextPollDelayMs,
+    nextPollAt: monitor.nextPollAt,
+    totalPolls: monitor.totalPolls,
+    totalAlerts: monitor.totalAlerts,
+    consecutiveFailures: monitor.consecutiveFailures,
+  }));
 }
 
 export function buildSessionsSummary({
@@ -104,11 +162,10 @@ export function buildSessionsSummary({
   return {
     activeCount: ordered.length,
     stickyBoundCount,
-    byApiKey: activeSessionsByKey,
+    apiKeyGroups: Object.keys(activeSessionsByKey).length,
     top: ordered.slice(0, 8).map((entry) => ({
-      sessionId: entry.sessionId,
       requestCount: entry.requestCount,
-      connectionId: entry.connectionId,
+      stickyBound: Boolean(entry.connectionId),
       ageMs: entry.ageMs,
       idleMs: Math.max(0, Date.now() - entry.lastActive),
       createdAt: new Date(entry.createdAt).toISOString(),
@@ -227,6 +284,8 @@ export function buildHealthPayload({
   activeSessions,
   activeSessionsByKey = {},
   credentialHealth,
+  capacity,
+  runtime,
 }: BuildHealthPayloadOptions) {
   const timestamp = new Date().toISOString();
   const system = {
@@ -248,7 +307,7 @@ export function buildHealthPayload({
             ? cb.lastFailureTime
             : null;
       return {
-        provider: cb.name,
+        provider: safeProviderLabel(cb.name),
         state: cb.state,
         failureCount: cb.failureCount || 0,
         lastFailure,
@@ -312,15 +371,19 @@ export function buildHealthPayload({
       monitoredCount: Object.keys(providerHealth).length,
     },
     localProviders,
-    rateLimitStatus,
-    learnedLimits,
-    lockouts,
+    rateLimitStatus: summarizeRateLimitStatus(rateLimitStatus),
+    learnedLimits: summarizeScopedEntries(learnedLimits),
+    lockouts: Array.isArray(lockouts)
+      ? { entries: lockouts.length }
+      : summarizeScopedEntries(lockouts),
     quotaMonitor: {
       ...quotaMonitorSummary,
-      monitors: limitMonitors(quotaMonitorMonitors),
+      monitors: sanitizeQuotaMonitors(quotaMonitorMonitors),
     },
     sessions: buildSessionsSummary({ activeSessions, activeSessionsByKey }),
     credentialHealth, // may be undefined if credentialHealth module not loaded
+    capacity,
+    runtime,
     dedup: {
       inflightRequests,
     },

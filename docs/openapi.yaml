@@ -4142,7 +4142,7 @@ paths:
     get:
       tags: [System]
       summary: System health check
-      description: Returns system health including uptime, memory, circuit breakers, rate limits
+      description: Returns authenticated system health, safe provider and masked Codex-account capacity signals, and cached process metrics. Capacity samples use one-minute buckets with 24-hour in-memory retention; raw account identifiers and credentials are not returned.
       responses:
         "200":
           description: Health status

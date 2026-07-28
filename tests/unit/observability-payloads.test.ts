@@ -7,7 +7,7 @@ import {
   buildTelemetryPayload,
 } from "../../src/lib/monitoring/observability.ts";
 
-test("buildSessionsSummary returns sticky counts and ordered top sessions", () => {
+test("buildSessionsSummary returns safe aggregate counts and ordered top sessions", () => {
   const summary = buildSessionsSummary({
     activeSessions: [
       {
@@ -32,9 +32,10 @@ test("buildSessionsSummary returns sticky counts and ordered top sessions", () =
 
   assert.equal(summary.activeCount, 2);
   assert.equal(summary.stickyBoundCount, 1);
-  assert.equal(summary.byApiKey.key1, 2);
-  assert.equal(summary.top[0].sessionId, "sess-a");
-  assert.equal(summary.top[1].sessionId, "sess-b");
+  assert.equal(summary.apiKeyGroups, 1);
+  assert.equal(summary.top[0].requestCount, 5);
+  assert.equal(summary.top[1].requestCount, 3);
+  assert.doesNotMatch(JSON.stringify(summary), /sess-a|sess-b|conn-b|key1/);
 });
 
 test("buildTelemetryPayload exposes totalRequests alias plus quota/session signals", () => {
@@ -96,6 +97,7 @@ test("buildHealthPayload keeps legacy aliases and adds session/quota observabili
       { name: "test-ignore", state: "OPEN", failureCount: 9, lastFailureTime: null },
     ],
     rateLimitStatus: { codex: { blocked: 1 } },
+    learnedLimits: { "codex:conn-1:gpt": { maxRequests: 2 } },
     lockouts: { codex: { "conn-1": { until: "2026-04-12T13:00:00Z" } } },
     localProviders: { ollama: { ok: true } },
     inflightRequests: 4,
@@ -157,9 +159,11 @@ test("buildHealthPayload keeps legacy aliases and adds session/quota observabili
   assert.equal(payload.providerSummary.monitoredCount, 1);
   assert.equal(payload.activeConnections, 2);
   assert.equal(payload.circuitBreakers.open, 1);
+  assert.equal(payload.providerBreakers[0].provider, "codex");
   assert.equal(payload.sessions.activeCount, 1);
   assert.equal(payload.sessions.stickyBoundCount, 1);
   assert.equal(payload.quotaMonitor.active, 1);
   assert.equal(payload.quotaMonitor.monitors[0].provider, "codex");
   assert.equal(payload.setupComplete, true);
+  assert.doesNotMatch(JSON.stringify(payload), /conn-1|sess-a|key1/);
 });
