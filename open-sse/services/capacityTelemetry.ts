@@ -361,6 +361,231 @@ function currentForProvider(
   return { inflight, queueDepth, rateLimitQueueDepth, byAccount };
 }
 
+type ProviderCurrent = ReturnType<typeof currentForProvider>;
+
+function sumLimits(limits: Array<number | null>): number | null {
+  const configured = limits.filter((limit): limit is number => limit !== null);
+  return configured.length > 0 ? configured.reduce((sum, limit) => sum + limit, 0) : null;
+}
+
+function effectiveLimit(connection: CapacityConnection, current: ProviderCurrent): number | null {
+  const accountKey = typeof connection.id === "string" ? connection.id : null;
+  const semaphore = accountKey ? current.byAccount.get(accountKey) : undefined;
+  return typeof semaphore?.maxConcurrency === "number" && semaphore.maxConcurrency > 0
+    ? semaphore.maxConcurrency
+    : configuredConcurrencyLimit(connection);
+}
+
+function availabilityForConnection(
+  connection: CapacityConnection,
+  semaphore: SemaphoreStatus[string] | undefined,
+  quota: CapacityQuotaSnapshot | undefined,
+  nowMs: number
+) {
+  const cooldownUntilMs = parseDateMs(connection.rateLimitedUntil);
+  const blockedUntilMs = parseDateMs(semaphore?.blockedUntil);
+  const exhausted = quota?.status === "exhausted";
+  const cooling = (cooldownUntilMs ?? 0) > nowMs || (blockedUntilMs ?? 0) > nowMs;
+  const inactive = connection.isActive === false;
+  const availability = inactive
+    ? "inactive"
+    : exhausted
+      ? "quota_exhausted"
+      : cooling
+        ? "cooldown"
+        : "available";
+  const cooldownUntil = cooling
+    ? new Date(Math.max(cooldownUntilMs ?? 0, blockedUntilMs ?? 0)).toISOString()
+    : null;
+  return { cooling, exhausted, inactive, availability, cooldownUntil };
+}
+
+function codexAccountSnapshot({
+  connection,
+  accountKey,
+  semaphore,
+  quota,
+  current,
+  rateLimitStatus,
+  nowMs,
+}: {
+  connection: CapacityConnection;
+  accountKey: string;
+  semaphore: SemaphoreStatus[string] | undefined;
+  quota: CapacityQuotaSnapshot | undefined;
+  current: ProviderCurrent;
+  rateLimitStatus: RateLimitStatus;
+  nowMs: number;
+}) {
+  const rateLimitDepth = rateLimitQueueDepthForAccount("codex", accountKey, rateLimitStatus);
+  const state = availabilityForConnection(connection, semaphore, quota, nowMs);
+  return {
+    account: maskAccount(accountKey),
+    planType: planType(connection.providerSpecificData),
+    configuredConcurrencyLimit: configuredConcurrencyLimit(connection),
+    effectiveConcurrencyLimit: effectiveLimit(connection, current),
+    currentInflight: semaphore?.running ?? 0,
+    queue: {
+      depth: (semaphore?.queued ?? 0) + rateLimitDepth,
+      accountSemaphoreDepth: semaphore?.queued ?? 0,
+      rateLimitDepth,
+    },
+    rolling: aggregateBuckets(codexAccountEntries.get(accountKey), nowMs),
+    availability: state.availability,
+    cooldownUntil: state.cooldownUntil,
+    quota: quota
+      ? {
+          status: typeof quota.status === "string" ? quota.status : "unknown",
+          usagePercent:
+            typeof quota.lastQuotaPercent === "number" && Number.isFinite(quota.lastQuotaPercent)
+              ? quota.lastQuotaPercent
+              : null,
+          resetAt: typeof quota.lastResetAt === "string" ? quota.lastResetAt : null,
+        }
+      : null,
+  };
+}
+
+function quotaSnapshotsByAccount(quotaSnapshots: CapacityQuotaSnapshot[]) {
+  const quotaByAccount = new Map<string, CapacityQuotaSnapshot>();
+  for (const snapshot of quotaSnapshots) {
+    if (snapshot.provider === "codex" && typeof snapshot.accountId === "string") {
+      quotaByAccount.set(snapshot.accountId, snapshot);
+    }
+  }
+  return quotaByAccount;
+}
+
+function providerNames({
+  connections,
+  semaphoreStatus,
+  rateLimitStatus,
+}: {
+  connections: CapacityConnection[];
+  semaphoreStatus: SemaphoreStatus;
+  rateLimitStatus: RateLimitStatus;
+}) {
+  const providers = new Set<string>();
+  for (const connection of connections) {
+    if (typeof connection.provider === "string" && connection.provider)
+      providers.add(connection.provider);
+  }
+  for (const status of [semaphoreStatus, rateLimitStatus]) {
+    for (const key of Object.keys(status)) {
+      const parts = splitSemaphoreKey(key);
+      if (parts) providers.add(parts.provider);
+    }
+  }
+  return [...providers].sort().slice(0, MAX_PROVIDERS);
+}
+
+function accountState(
+  connection: CapacityConnection,
+  current: ProviderCurrent,
+  quotaByAccount: Map<string, CapacityQuotaSnapshot>,
+  nowMs: number
+) {
+  const accountKey = typeof connection.id === "string" ? connection.id : null;
+  const semaphore = accountKey ? current.byAccount.get(accountKey) : undefined;
+  const quota = accountKey ? quotaByAccount.get(accountKey) : undefined;
+  const state = availabilityForConnection(connection, semaphore, quota, nowMs);
+  return { accountKey, semaphore, quota, state };
+}
+
+function providerAccountSummary({
+  provider,
+  providerConnections,
+  current,
+  quotaByAccount,
+  rateLimitStatus,
+  nowMs,
+}: {
+  provider: string;
+  providerConnections: CapacityConnection[];
+  current: ProviderCurrent;
+  quotaByAccount: Map<string, CapacityQuotaSnapshot>;
+  rateLimitStatus: RateLimitStatus;
+  nowMs: number;
+}) {
+  const codexAccounts: unknown[] = [];
+  let available = 0;
+  let coolingDown = 0;
+  let quotaExhausted = 0;
+  for (const connection of providerConnections) {
+    const account = accountState(connection, current, quotaByAccount, nowMs);
+    const { accountKey, semaphore, quota, state } = account;
+    if (state.cooling) coolingDown += 1;
+    if (state.exhausted) quotaExhausted += 1;
+    if (!state.inactive && !state.cooling && !state.exhausted) available += 1;
+    if (provider === "codex" && accountKey) {
+      codexAccounts.push(
+        codexAccountSnapshot({
+          connection,
+          accountKey,
+          semaphore,
+          quota,
+          current,
+          rateLimitStatus,
+          nowMs,
+        })
+      );
+    }
+  }
+  return { available, coolingDown, quotaExhausted, codexAccounts };
+}
+
+function providerSnapshot({
+  provider,
+  connections,
+  semaphoreStatus,
+  rateLimitStatus,
+  quotaByAccount,
+  nowMs,
+}: {
+  provider: string;
+  connections: CapacityConnection[];
+  semaphoreStatus: SemaphoreStatus;
+  rateLimitStatus: RateLimitStatus;
+  quotaByAccount: Map<string, CapacityQuotaSnapshot>;
+  nowMs: number;
+}) {
+  const providerConnections = connections.filter((connection) => connection.provider === provider);
+  const current = currentForProvider(provider, semaphoreStatus, rateLimitStatus);
+  const activeConnections = providerConnections.filter(
+    (connection) => connection.isActive !== false
+  );
+  const accountSummary = providerAccountSummary({
+    provider,
+    providerConnections,
+    current,
+    quotaByAccount,
+    rateLimitStatus,
+    nowMs,
+  });
+  const snapshot: Record<string, unknown> = {
+    configuredConcurrencyLimit: sumLimits(activeConnections.map(configuredConcurrencyLimit)),
+    effectiveConcurrencyLimit: sumLimits(
+      activeConnections.map((connection) => effectiveLimit(connection, current))
+    ),
+    currentInflight: current.inflight,
+    rolling: aggregateBuckets(providerEntries.get(provider), nowMs),
+    queue: {
+      depth: current.queueDepth + current.rateLimitQueueDepth,
+      accountSemaphoreDepth: current.queueDepth,
+      rateLimitDepth: current.rateLimitQueueDepth,
+    },
+    accounts: {
+      configured: providerConnections.length,
+      available: accountSummary.available,
+      coolingDown: accountSummary.coolingDown,
+      rateLimited: accountSummary.coolingDown,
+      quotaExhausted: accountSummary.quotaExhausted,
+    },
+  };
+  if (provider === "codex") snapshot.codexAccounts = accountSummary.codexAccounts;
+  return snapshot;
+}
+
 /** Build the safe, low-cardinality capacity portion of the health payload. */
 export function getCapacityTelemetrySnapshot({
   connections,
@@ -375,138 +600,17 @@ export function getCapacityTelemetrySnapshot({
   quotaSnapshots?: CapacityQuotaSnapshot[];
   nowMs?: number;
 }) {
-  const providers = new Set<string>();
-  for (const connection of connections) {
-    if (typeof connection.provider === "string" && connection.provider)
-      providers.add(connection.provider);
-  }
-  for (const key of Object.keys(semaphoreStatus)) {
-    const parts = splitSemaphoreKey(key);
-    if (parts) providers.add(parts.provider);
-  }
-  for (const key of Object.keys(rateLimitStatus)) {
-    const parts = splitSemaphoreKey(key);
-    if (parts) providers.add(parts.provider);
-  }
-
-  const quotaByAccount = new Map<string, CapacityQuotaSnapshot>();
-  for (const snapshot of quotaSnapshots) {
-    if (snapshot.provider === "codex" && typeof snapshot.accountId === "string") {
-      quotaByAccount.set(snapshot.accountId, snapshot);
-    }
-  }
-
+  const quotaByAccount = quotaSnapshotsByAccount(quotaSnapshots);
   const output: Record<string, unknown> = {};
-  for (const provider of [...providers].sort().slice(0, MAX_PROVIDERS)) {
-    const providerConnections = connections.filter(
-      (connection) => connection.provider === provider
-    );
-    const current = currentForProvider(provider, semaphoreStatus, rateLimitStatus);
-    const configuredLimits = providerConnections
-      .filter((connection) => connection.isActive !== false)
-      .map(configuredConcurrencyLimit)
-      .filter((limit): limit is number => limit !== null);
-    const providerConfiguredConcurrencyLimit =
-      configuredLimits.length > 0 ? configuredLimits.reduce((sum, limit) => sum + limit, 0) : null;
-    const effectiveLimits = providerConnections
-      .filter((connection) => connection.isActive !== false)
-      .map((connection) => {
-        const accountKey = typeof connection.id === "string" ? connection.id : null;
-        const semaphore = accountKey ? current.byAccount.get(accountKey) : undefined;
-        return typeof semaphore?.maxConcurrency === "number" && semaphore.maxConcurrency > 0
-          ? semaphore.maxConcurrency
-          : configuredConcurrencyLimit(connection);
-      })
-      .filter((limit): limit is number => limit !== null);
-    const effectiveConcurrencyLimit =
-      effectiveLimits.length > 0 ? effectiveLimits.reduce((sum, limit) => sum + limit, 0) : null;
-    const history = aggregateBuckets(providerEntries.get(provider), nowMs);
-    const providerSnapshot: Record<string, unknown> = {
-      configuredConcurrencyLimit: providerConfiguredConcurrencyLimit,
-      effectiveConcurrencyLimit,
-      currentInflight: current.inflight,
-      rolling: history,
-      queue: {
-        depth: current.queueDepth + current.rateLimitQueueDepth,
-        accountSemaphoreDepth: current.queueDepth,
-        rateLimitDepth: current.rateLimitQueueDepth,
-      },
-      accounts: {
-        configured: providerConnections.length,
-        available: 0,
-        coolingDown: 0,
-        rateLimited: 0,
-        quotaExhausted: 0,
-      },
-    };
-
-    let available = 0;
-    let coolingDown = 0;
-    let quotaExhausted = 0;
-    const codexAccounts: unknown[] = [];
-    for (const connection of providerConnections) {
-      const accountKey = typeof connection.id === "string" ? connection.id : null;
-      const cooldownUntilMs = parseDateMs(connection.rateLimitedUntil);
-      const semaphore = accountKey ? current.byAccount.get(accountKey) : undefined;
-      const blockedUntilMs = parseDateMs(semaphore?.blockedUntil);
-      const quota = accountKey ? quotaByAccount.get(accountKey) : undefined;
-      const exhausted = quota?.status === "exhausted";
-      const cooling = (cooldownUntilMs ?? 0) > nowMs || (blockedUntilMs ?? 0) > nowMs;
-      const inactive = connection.isActive === false;
-      if (cooling) coolingDown += 1;
-      if (exhausted) quotaExhausted += 1;
-      if (!inactive && !cooling && !exhausted) available += 1;
-      if (provider === "codex" && accountKey) {
-        codexAccounts.push({
-          account: maskAccount(accountKey),
-          planType: planType(connection.providerSpecificData),
-          configuredConcurrencyLimit: configuredConcurrencyLimit(connection),
-          effectiveConcurrencyLimit:
-            typeof semaphore?.maxConcurrency === "number" && semaphore.maxConcurrency > 0
-              ? semaphore.maxConcurrency
-              : configuredConcurrencyLimit(connection),
-          currentInflight: semaphore?.running ?? 0,
-          queue: {
-            depth:
-              (semaphore?.queued ?? 0) +
-              rateLimitQueueDepthForAccount(provider, accountKey, rateLimitStatus),
-            accountSemaphoreDepth: semaphore?.queued ?? 0,
-            rateLimitDepth: rateLimitQueueDepthForAccount(provider, accountKey, rateLimitStatus),
-          },
-          rolling: aggregateBuckets(codexAccountEntries.get(accountKey), nowMs),
-          availability: inactive
-            ? "inactive"
-            : exhausted
-              ? "quota_exhausted"
-              : cooling
-                ? "cooldown"
-                : "available",
-          cooldownUntil: cooling
-            ? new Date(Math.max(cooldownUntilMs ?? 0, blockedUntilMs ?? 0)).toISOString()
-            : null,
-          quota: quota
-            ? {
-                status: typeof quota.status === "string" ? quota.status : "unknown",
-                usagePercent:
-                  typeof quota.lastQuotaPercent === "number" &&
-                  Number.isFinite(quota.lastQuotaPercent)
-                    ? quota.lastQuotaPercent
-                    : null,
-                resetAt: typeof quota.lastResetAt === "string" ? quota.lastResetAt : null,
-              }
-            : null,
-        });
-      }
-    }
-    providerSnapshot.accounts = {
-      configured: providerConnections.length,
-      available,
-      coolingDown,
-      rateLimited: coolingDown,
-      quotaExhausted,
-    };
-    if (provider === "codex") providerSnapshot.codexAccounts = codexAccounts;
-    output[provider] = providerSnapshot;
+  for (const provider of providerNames({ connections, semaphoreStatus, rateLimitStatus })) {
+    output[provider] = providerSnapshot({
+      provider,
+      connections,
+      semaphoreStatus,
+      rateLimitStatus,
+      quotaByAccount,
+      nowMs,
+    });
   }
 
   return {

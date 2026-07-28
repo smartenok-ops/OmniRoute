@@ -1,8 +1,12 @@
 import { test, expect } from "@playwright/test";
+import { gotoDashboardRoute } from "./helpers/dashboardAuth";
 
 test.describe("API Health Checks", () => {
-  test("GET /api/monitoring/health returns OK", async ({ request }) => {
-    const res = await request.get("/api/monitoring/health");
+  test("GET /api/monitoring/health returns OK for an authenticated management session", async ({
+    page,
+  }) => {
+    await gotoDashboardRoute(page, "/dashboard");
+    const res = await page.request.get("/api/monitoring/health");
     expect(res.ok()).toBeTruthy();
     const body = (await res.json()) as any;
     expect(body).toHaveProperty("status");
