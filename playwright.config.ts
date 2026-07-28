@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || "20128";
 const dashboardBaseUrl = `http://localhost:${dashboardPort}`;
-const webServerReadyUrl = `${dashboardBaseUrl}/api/monitoring/health`;
+const webServerReadyUrl = `${dashboardBaseUrl}/api/health/ping`;
 const playwrightServerMode = process.env.OMNIROUTE_PLAYWRIGHT_SERVER_MODE || "start";
 const playwrightWebServerTimeout = Number.parseInt(
   process.env.OMNIROUTE_PLAYWRIGHT_WEB_SERVER_TIMEOUT || "900000",

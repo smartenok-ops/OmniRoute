@@ -21,6 +21,7 @@ process.env.JWT_SECRET = "test-health-cache-secret";
 
 await import("../../src/lib/db/core.ts");
 const { GET, DELETE } = await import("../../src/app/api/monitoring/health/route.ts");
+const { GET: ping } = await import("../../src/app/api/health/ping/route.ts");
 const { SignJWT } = await import("jose");
 const authToken = await new SignJWT({ authenticated: true })
   .setProtectedHeader({ alg: "HS256" })
@@ -47,11 +48,16 @@ test("GET within the TTL serves the cached payload (identical timestamp)", async
   assert.equal(t2, t1, "a second GET within the TTL must return the cached payload");
 });
 
-test("rich monitoring health remains protected when requireLogin is disabled", async () => {
+test("rich monitoring health remains protected while the public liveness probe succeeds", async () => {
   const localDb = await import("../../src/lib/localDb.ts");
   await localDb.updateSettings({ requireLogin: false });
   const response = await GET(new Request("http://localhost/api/monitoring/health"));
-  assert.ok([401, 403].includes(response.status));
+  assert.equal(response.status, 401);
+
+  const liveness = await ping();
+  assert.equal(liveness.status, 200);
+  assert.equal((await liveness.json()).status, "ok");
+
   await localDb.updateSettings({ requireLogin: true });
 });
 

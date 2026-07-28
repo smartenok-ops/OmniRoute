@@ -947,8 +947,8 @@ app.whenReady().then(async () => {
   startNextServer();
   let serverReady = true;
   if (!isDev) {
-    // Probe the auth-exempt health endpoint (not the root URL, which may redirect).
-    serverReady = await waitForServer(`${getServerUrl()}/api/monitoring/health`);
+    // Probe the public liveness endpoint (not the root URL, which may redirect).
+    serverReady = await waitForServer(`${getServerUrl()}/api/health/ping`);
   }
 
   if (isHeadless) {
@@ -964,7 +964,7 @@ app.whenReady().then(async () => {
   // If readiness timed out (e.g. very long first-launch migrations), don't leave the
   // window stuck on a hanging connection — keep polling and reload once it responds (#2460).
   if (!isDev && !serverReady && !isHeadless) {
-    void waitForServer(`${getServerUrl()}/api/monitoring/health`, 300000).then((ready) => {
+    void waitForServer(`${getServerUrl()}/api/health/ping`, 300000).then((ready) => {
       if (ready && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.loadURL(getServerUrl());
       }

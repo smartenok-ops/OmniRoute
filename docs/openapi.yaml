@@ -4154,7 +4154,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/MonitoringHealthResponse"
         "401":
-          description: Authentication required
+          $ref: "#/components/responses/ManagementAuthenticationRequired"
 
   /api/rate-limits:
     get:

@@ -369,7 +369,7 @@ export function reportReadinessTimeout(dashboardPort, supervisor) {
     `\n\x1b[33m⚠ Server did not respond within 60s.\x1b[0m It may still be starting, or may` +
       ` have failed silently.`
   );
-  console.error(`  Try:  curl -I http://localhost:${dashboardPort}/api/monitoring/health`);
+  console.error(`  Try:  curl -I http://localhost:${dashboardPort}/api/health/ping`);
   console.error(`  Or:   rerun with \x1b[36m--log\x1b[0m to see live server output.\n`);
 
   const recentLog = supervisor?.getRecentLog?.() ?? [];
