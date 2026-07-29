@@ -4156,6 +4156,35 @@ paths:
         "401":
           $ref: "#/components/responses/ManagementAuthenticationRequired"
 
+  /api/health/ping:
+    get:
+      tags: [System]
+      summary: Lightweight liveness probe
+      description: >-
+        Public, unauthenticated liveness probe that verifies the server process
+        and its SQLite database are responsive. Intended for high-frequency
+        health checks.
+      security: []
+      responses:
+        "200":
+          description: Server and database are responsive
+          headers:
+            Cache-Control:
+              description: Disables caching for the liveness result.
+              schema:
+                type: string
+                example: no-store, no-cache, must-revalidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthPingSuccessResponse"
+        "503":
+          description: The database query failed or the liveness check encountered an error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthPingFailureResponse"
+
   /api/rate-limits:
     get:
       tags: [System]
@@ -5850,6 +5879,67 @@ components:
         timestamp: { type: string, format: date-time }
         capacity:
           $ref: "#/components/schemas/CapacityTelemetry"
+        runtime:
+          $ref: "#/components/schemas/RuntimeMetrics"
+    HealthPingSuccessResponse:
+      type: object
+      required: [status, timestamp, latencyMs]
+      properties:
+        status: { type: string, enum: [ok] }
+        timestamp: { type: string, format: date-time }
+        latencyMs: { type: integer, minimum: 0 }
+    HealthPingFailureResponse:
+      type: object
+      required: [status, error]
+      properties:
+        status: { type: string, enum: [error] }
+        error: { type: string, enum: [db_query_failed, ping_failed] }
+    RuntimeMetrics:
+      type: object
+      required: [sampledAt, memory, fileDescriptors, database]
+      properties:
+        sampledAt: { type: string, format: date-time }
+        memory:
+          type: object
+          required: [rss, heapUsed, heapTotal, external, arrayBuffers, v8HeapLimit]
+          properties:
+            rss: { type: integer, minimum: 0 }
+            heapUsed: { type: integer, minimum: 0 }
+            heapTotal: { type: integer, minimum: 0 }
+            external: { type: integer, minimum: 0 }
+            arrayBuffers: { type: integer, minimum: 0 }
+            v8HeapLimit: { type: integer, minimum: 0 }
+        fileDescriptors:
+          type: [integer, "null"]
+          minimum: 0
+        database:
+          type: object
+          required: [bytes, walBytes]
+          properties:
+            bytes:
+              type: [integer, "null"]
+              minimum: 0
+            walBytes:
+              type: [integer, "null"]
+              minimum: 0
+        activity:
+          type: object
+          required:
+            [
+              activeAccountSlots,
+              pendingAccountSlots,
+              pendingRateLimitRequests,
+              pendingDeduplicatedRequests,
+              activeUpstreamAttempts,
+              activeUpstreamStreams,
+            ]
+          properties:
+            activeAccountSlots: { type: integer, minimum: 0 }
+            pendingAccountSlots: { type: integer, minimum: 0 }
+            pendingRateLimitRequests: { type: integer, minimum: 0 }
+            pendingDeduplicatedRequests: { type: integer, minimum: 0 }
+            activeUpstreamAttempts: { type: integer, minimum: 0 }
+            activeUpstreamStreams: { type: integer, minimum: 0 }
     CapacityTelemetry:
       type: object
       required: [generatedAt, staleAfterSeconds, stale, truncation, sampling, providers]
