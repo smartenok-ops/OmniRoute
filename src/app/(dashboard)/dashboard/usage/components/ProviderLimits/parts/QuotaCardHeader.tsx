@@ -69,9 +69,12 @@ export default function QuotaCardHeader({
       : translateUsageOrFallback(t, "tokenExpired", "Token expired");
   const tokenExpiryTitle = hasTokenExpiry ? new Date(tokenExpiryMs).toLocaleString() : undefined;
 
+  const primaryLabel = accountName || providerLabel;
+  const primaryTitle = accountName ? `${providerLabel} · ${accountName}` : providerLabel;
+
   return (
-    <div className="flex min-h-[62px] items-center justify-between gap-2 px-3 py-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+    <div className="flex min-h-[62px] items-center justify-between gap-2 px-3 py-2.5">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
         <span
           className="inline-flex size-7 shrink-0 items-center justify-center"
           title={cardStatus}
@@ -82,13 +85,13 @@ export default function QuotaCardHeader({
         <div className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
           <ProviderIcon providerId={connection.provider} size={24} type="color" />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col justify-center">
-          <div className="flex h-4 min-w-0 items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             <span
-              className="truncate text-[12px] font-semibold leading-4 text-text-main"
-              title={providerLabel}
+              className="min-w-0 truncate text-[13px] font-semibold leading-4 text-text-main"
+              title={primaryTitle}
             >
-              {providerLabel}
+              {primaryLabel}
             </span>
             <span
               className="inline-flex h-4 shrink-0 items-center"
@@ -111,12 +114,9 @@ export default function QuotaCardHeader({
               </span>
             )}
           </div>
-          <span className="text-[11px] text-text-muted truncate" title={accountName ?? ""}>
-            {accountName}
-          </span>
           {tokenExpiryLabel && (
             <span
-              className={`text-[10px] truncate ${tokenCountdown ? "text-sky-500" : "text-rose-500"}`}
+              className={`text-[10px] leading-3 truncate ${tokenCountdown ? "text-sky-500" : "text-rose-500"}`}
               title={tokenExpiryTitle}
             >
               {tokenExpiryLabel}
