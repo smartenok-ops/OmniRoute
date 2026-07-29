@@ -58,6 +58,12 @@ test("a pre-release VERSION never promotes latest", () => {
   assert.equal(shouldPromote("3.8.40-rc.1", ["3.8.39"]), "false");
 });
 
+test("a pre-release VERSION drains piped candidate tags before exiting", () => {
+  // More than a pipe buffer makes the former early exit reliably surface as EPIPE.
+  const tags = Array.from({ length: 12_000 }, () => "3.8.39");
+  assert.equal(shouldPromote("3.8.40-rc.1", tags), "false");
+});
+
 test("numeric (not lexical) semver ordering", () => {
   // Lexical sort would rank 3.9.0 > 3.10.0; semver -V must rank 3.10.0 highest.
   assert.equal(shouldPromote("3.10.0", ["3.9.0", "3.2.8"]), "true");
