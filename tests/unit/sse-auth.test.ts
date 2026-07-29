@@ -166,6 +166,57 @@ test("codex session account affinity is opt-in and honors TTL", async () => {
   );
 });
 
+test("codex fill-first creates affinity by priority and keeps fallback pins", async () => {
+  const affinityDb = await import("../../src/lib/db/sessionAccountAffinity.ts");
+  await settingsDb.updateSettings({
+    providerStrategies: { codex: { fallbackStrategy: "fill-first" } },
+    codexSessionAffinityTtlMs: 60_000,
+  });
+  const primary = await seedConnection("codex", {
+    name: "codex-affinity-primary",
+    priority: 1,
+    lastUsedAt: new Date().toISOString(),
+  });
+  const reserve = await seedConnection("codex", {
+    name: "codex-affinity-reserve",
+    priority: 2,
+    lastUsedAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const fresh = await auth.getProviderCredentials("codex", null, null, null, {
+    sessionKey: "fresh-priority-session",
+  });
+  assert.equal(fresh.connectionId, primary.id, "new affinity must prefer priority 1 over LRU");
+
+  quotaCache.setQuotaCache(primary.id, "codex", {
+    session: { used: 100, total: 100, remaining: 0, resetAt: futureIso() },
+  });
+  const fallbackSelection = await auth.getProviderCredentials("codex", null, null, null, {
+    sessionKey: "fallback-session",
+  });
+  assert.equal(fallbackSelection.connectionId, reserve.id, "exhausted primary must use reserve");
+  assert.equal(
+    affinityDb.getSessionAccountAffinity("fallback-session", "codex", 60_000)?.connectionId,
+    reserve.id,
+    "fallback selection must persist its new affinity"
+  );
+
+  affinityDb.upsertSessionAccountAffinity(
+    "existing-reserve-session",
+    "codex",
+    reserve.id,
+    Date.now(),
+    60_000
+  );
+  quotaCache.setQuotaCache(primary.id, "codex", {
+    session: { used: 0, total: 100, remaining: 100, resetAt: futureIso() },
+  });
+  const existing = await auth.getProviderCredentials("codex", null, null, null, {
+    sessionKey: "existing-reserve-session",
+  });
+  assert.equal(existing.connectionId, reserve.id, "existing affinity must not move to primary");
+});
+
 test("session account affinity expires when TTL has passed", async () => {
   const affinityDb = await import("../../src/lib/db/sessionAccountAffinity.ts");
   const now = Date.now();
