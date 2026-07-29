@@ -12,10 +12,17 @@ import {
   getUpstreamErrorIdentifier,
 } from "../../open-sse/handlers/chatCore/streamErrorResult.ts";
 
-test("isSemaphoreCapacityError matches the two semaphore codes only", () => {
+test("isSemaphoreCapacityError matches typed local account-capacity codes only", () => {
   assert.equal(isSemaphoreCapacityError({ code: "SEMAPHORE_TIMEOUT" }), true);
   assert.equal(isSemaphoreCapacityError({ code: "SEMAPHORE_QUEUE_FULL" }), true);
+  assert.equal(isSemaphoreCapacityError({ code: "RATE_LIMIT_QUEUE_TIMEOUT" }, "codex"), true);
+  assert.equal(
+    isSemaphoreCapacityError({ code: "RATE_LIMIT_QUEUE_TIMEOUT" }, "antigravity"),
+    false,
+    "rate-limit queue timeout keeps its legacy semantics outside Codex"
+  );
   assert.equal(isSemaphoreCapacityError({ code: "OTHER" }), false);
+  assert.equal(isSemaphoreCapacityError({ status: 429 }), false);
   assert.equal(isSemaphoreCapacityError(null), false);
   assert.equal(isSemaphoreCapacityError("SEMAPHORE_TIMEOUT"), false);
 });

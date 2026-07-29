@@ -2459,6 +2459,7 @@ export async function handleChatCore({
               // Codex 429 account-rotation failover (disabled for context-relay so combo.ts can inject handoff)
               if (
                 provider === "codex" &&
+                !skipUpstreamRetry &&
                 comboStrategy !== "context-relay" &&
                 res.response.status === 429 &&
                 attempts < maxAttempts - 1
@@ -2920,7 +2921,7 @@ export async function handleChatCore({
     }
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (isSemaphoreCapacityError(error)) {
+    if (isSemaphoreCapacityError(error, provider)) {
       appendRequestLog({
         model,
         provider,

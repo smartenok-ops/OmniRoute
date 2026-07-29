@@ -133,6 +133,19 @@ export async function selectSessionAffinityConnection<T extends SessionAffinityC
   return connection;
 }
 
+/** Select normally, or leave the durable pin completely untouched during overflow. */
+export function selectSessionAffinityConnectionUnlessPreserved<T extends SessionAffinityConnection>(
+  provider: string,
+  options: AffinityPinOptions,
+  connections: T[],
+  ttlMs: number,
+  strategy: string
+): Promise<T | null> {
+  return options.preserveSessionAffinity
+    ? Promise.resolve(null)
+    : selectSessionAffinityConnection(provider, options.sessionKey, connections, ttlMs, strategy);
+}
+
 /** Subset of credential-selection options the pin resolution consults. */
 export interface AffinityPinOptions {
   sessionKey?: string | null;
@@ -140,6 +153,7 @@ export interface AffinityPinOptions {
   allowRateLimitedConnections?: boolean;
   bypassQuotaPolicy?: boolean;
   sessionAffinityTtlMs?: number | null;
+  preserveSessionAffinity?: boolean;
 }
 
 /** Settings subset needed to resolve the codex session-affinity TTL. */
@@ -235,6 +249,7 @@ function isConnectionEligibleForAffinityPin(
 export function applySessionAffinityPin(params: ApplySessionAffinityPinParams): string | null {
   const { forcedConnectionId, options, sessionAffinityTtlMs, connections, provider } = params;
   const sessionKey = options.sessionKey;
+  if (options.preserveSessionAffinity) return null;
   if (!forcedConnectionId || !sessionKey || sessionAffinityTtlMs <= 0) return null;
 
   const pinned = getSessionAccountAffinity(sessionKey, provider, sessionAffinityTtlMs);

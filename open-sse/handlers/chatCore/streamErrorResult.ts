@@ -2,7 +2,7 @@
  * chatCore streaming error-result helpers (Quality Gate v2 / Fase 9 — chatCore god-file
  * decomposition, #3501).
  *
- * Extracted from chatCore: identify semaphore capacity errors, build a sanitized SSE error result
+ * Extracted from chatCore: identify local account-capacity errors, build a sanitized SSE error result
  * (an `data: {...}\n\ndata: [DONE]\n\n` body wrapped in an event-stream Response), and pull a string
  * error code off an unknown error. Side-effect-free; behaviour is byte-identical to the previous
  * module-level functions.
@@ -10,12 +10,16 @@
 
 import { buildErrorBody } from "../../utils/error.ts";
 
-export function isSemaphoreCapacityError(error: unknown): error is Error & { code: string } {
+export function isSemaphoreCapacityError(
+  error: unknown,
+  provider?: string | null
+): error is Error & { code: string } {
   return (
     !!error &&
     typeof error === "object" &&
     ((error as { code?: unknown }).code === "SEMAPHORE_TIMEOUT" ||
-      (error as { code?: unknown }).code === "SEMAPHORE_QUEUE_FULL")
+      (error as { code?: unknown }).code === "SEMAPHORE_QUEUE_FULL" ||
+      (provider === "codex" && (error as { code?: unknown }).code === "RATE_LIMIT_QUEUE_TIMEOUT"))
   );
 }
 
