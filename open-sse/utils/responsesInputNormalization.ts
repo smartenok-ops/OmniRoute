@@ -19,6 +19,17 @@ function normalizeCodexMessageContentPart(part: unknown, role: string): unknown 
     delete record.logprobs;
     delete record.obfuscation;
   }
+  // The Codex backend validates message content types by role. A persisted
+  // assistant item is valid with output_text, but clients may replay that same
+  // item under a user/developer role after rendering an attachment or rebuilding
+  // local history. In an input role, output_text is rejected with a 400; preserve
+  // the text while normalizing it back to input_text.
+  if (role !== "assistant" && record.type === "output_text") {
+    record.type = "input_text";
+    delete record.annotations;
+    delete record.logprobs;
+    delete record.obfuscation;
+  }
   return record;
 }
 
