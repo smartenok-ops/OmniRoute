@@ -1474,23 +1474,23 @@ export async function getProviderCredentials(
         lastErrorCode: 429,
       };
     }
-
     const orderedConnections = withQuota;
-
     const providerStrategyOverrides = (settings.providerStrategies || {}) as Record<
       string,
       { fallbackStrategy?: string; stickyRoundRobinLimit?: number }
     >;
     const providerOverride = providerStrategyOverrides[resolvedId] || {};
     const strategy =
-      providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
+      providerOverride.fallbackStrategy ||
+      (typeof settings.fallbackStrategy === "string" ? settings.fallbackStrategy : "fill-first");
 
     let connection;
     const affinityConnection = await selectSessionAffinityConnection(
       provider,
       options.sessionKey,
       orderedConnections,
-      sessionAffinityTtlMs
+      sessionAffinityTtlMs,
+      strategy
     );
     if (affinityConnection) {
       connection = affinityConnection;

@@ -80,7 +80,8 @@ export async function selectSessionAffinityConnection<T extends SessionAffinityC
   provider: string,
   sessionKey: string | null | undefined,
   connections: T[],
-  ttlMs = 0
+  ttlMs = 0,
+  strategy = ""
 ): Promise<T | null> {
   if (!sessionKey || connections.length === 0 || ttlMs <= 0) return null;
 
@@ -110,7 +111,12 @@ export async function selectSessionAffinityConnection<T extends SessionAffinityC
     );
   }
 
-  const connection = [...connections].sort(compareLruConnections)[0] ?? null;
+  const connection =
+    [...connections].sort(
+      provider === "codex" && strategy === "fill-first"
+        ? (a, b) => (a.priority || 999) - (b.priority || 999) || compareLruConnections(a, b)
+        : compareLruConnections
+    )[0] ?? null;
   if (!connection) return null;
 
   upsertSessionAccountAffinity(sessionKey, provider, connection.id, Date.now(), ttlMs);
