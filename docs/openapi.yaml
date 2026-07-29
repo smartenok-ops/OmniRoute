@@ -5880,7 +5880,11 @@ components:
         capacity:
           $ref: "#/components/schemas/CapacityTelemetry"
         runtime:
-          $ref: "#/components/schemas/RuntimeMetrics"
+          oneOf:
+            - $ref: "#/components/schemas/RuntimeMetrics"
+            - type: object
+              description: Runtime metrics are unavailable for this degraded health response.
+              maxProperties: 0
     HealthPingSuccessResponse:
       type: object
       required: [status, timestamp, latencyMs]
