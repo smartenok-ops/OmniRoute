@@ -1474,9 +1474,7 @@ export async function getProviderCredentials(
         lastErrorCode: 429,
       };
     }
-
     const orderedConnections = withQuota;
-
     const providerStrategyOverrides = (settings.providerStrategies || {}) as Record<
       string,
       { fallbackStrategy?: string; stickyRoundRobinLimit?: number }
