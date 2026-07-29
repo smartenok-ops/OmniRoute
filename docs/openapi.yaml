@@ -5900,11 +5900,13 @@ components:
         error: { type: string, enum: [db_query_failed, ping_failed] }
     RuntimeMetrics:
       type: object
+      additionalProperties: false
       required: [sampledAt, memory, fileDescriptors, database]
       properties:
         sampledAt: { type: string, format: date-time }
         memory:
           type: object
+          additionalProperties: false
           required: [rss, heapUsed, heapTotal, external, arrayBuffers, v8HeapLimit]
           properties:
             rss: { type: integer, minimum: 0 }
@@ -5918,6 +5920,7 @@ components:
           minimum: 0
         database:
           type: object
+          additionalProperties: false
           required: [bytes, walBytes]
           properties:
             bytes:
@@ -5928,6 +5931,7 @@ components:
               minimum: 0
         activity:
           type: object
+          additionalProperties: false
           required:
             [
               activeAccountSlots,
@@ -5990,8 +5994,8 @@ components:
           accounts,
         ]
       properties:
-        configuredConcurrencyLimit: { type: integer, nullable: true }
-        effectiveConcurrencyLimit: { type: integer, nullable: true }
+        configuredConcurrencyLimit: { type: [integer, "null"] }
+        effectiveConcurrencyLimit: { type: [integer, "null"] }
         currentInflight: { type: integer, minimum: 0 }
         rolling:
           type: object
@@ -6054,23 +6058,22 @@ components:
       properties:
         account: { type: string }
         planType: { type: string }
-        configuredConcurrencyLimit: { type: integer, nullable: true }
-        effectiveConcurrencyLimit: { type: integer, nullable: true }
+        configuredConcurrencyLimit: { type: [integer, "null"] }
+        effectiveConcurrencyLimit: { type: [integer, "null"] }
         currentInflight: { type: integer, minimum: 0 }
         queue: { $ref: "#/components/schemas/CapacityQueue" }
         rolling:
           type: object
           additionalProperties: { $ref: "#/components/schemas/CapacityRollingWindow" }
         availability: { type: string }
-        cooldownReason: { type: string, nullable: true }
-        cooldownUntil: { type: string, format: date-time, nullable: true }
+        cooldownReason: { type: [string, "null"] }
+        cooldownUntil: { type: [string, "null"], format: date-time }
         quota:
-          type: object
-          nullable: true
+          type: [object, "null"]
           properties:
             status: { type: string }
-            usagePercent: { type: number, nullable: true }
-            resetAt: { type: string, nullable: true }
+            usagePercent: { type: [number, "null"] }
+            resetAt: { type: [string, "null"] }
     PlaygroundPreset:
       type: object
       required:
