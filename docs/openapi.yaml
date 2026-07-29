@@ -1819,7 +1819,7 @@ paths:
                     items:
                       $ref: "#/components/schemas/ApiKey"
         "401":
-          description: Authentication required
+          $ref: "#/components/responses/Unauthorized"
     post:
       tags: [API Keys]
       summary: Create API key
@@ -4142,10 +4142,48 @@ paths:
     get:
       tags: [System]
       summary: System health check
-      description: Returns system health including uptime, memory, circuit breakers, rate limits
+      security:
+        - BearerAuth: []
+        - ManagementSessionAuth: []
+      description: Returns authenticated system health and provider-level capacity telemetry. The public Docker liveness probe is GET /api/health/ping. Capacity samples use one-minute buckets with 24-hour process-local retention; raw account identifiers and model-level aggregation are not returned. Configure OMNIROUTE_TELEMETRY_HMAC_SECRET for stable masked account labels; otherwise labels are omitted.
       responses:
         "200":
           description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringHealthResponse"
+        "401":
+          $ref: "#/components/responses/ManagementAuthenticationRequired"
+
+  /api/health/ping:
+    get:
+      tags: [System]
+      summary: Lightweight liveness probe
+      description: >-
+        Public, unauthenticated liveness probe that verifies the server process
+        and its SQLite database are responsive. Intended for high-frequency
+        health checks.
+      security: []
+      responses:
+        "200":
+          description: Server and database are responsive
+          headers:
+            Cache-Control:
+              description: Disables caching for the liveness result.
+              schema:
+                type: string
+                example: no-store, no-cache, must-revalidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthPingSuccessResponse"
+        "503":
+          description: The database query failed or the liveness check encountered an error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthPingFailureResponse"
 
   /api/rate-limits:
     get:
@@ -5769,11 +5807,7 @@ components:
       content:
         application/json:
           schema:
-            type: object
-            properties:
-              error:
-                type: string
-                example: Unauthorized
+            $ref: "#/components/schemas/ApiErrorResponse"
     ManagementAuthenticationRequired:
       description: Authentication required for management routes
       content:
@@ -5837,6 +5871,209 @@ components:
             requestId: 0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d
 
   schemas:
+    MonitoringHealthResponse:
+      type: object
+      required: [status, timestamp, capacity]
+      properties:
+        status: { type: string }
+        timestamp: { type: string, format: date-time }
+        capacity:
+          $ref: "#/components/schemas/CapacityTelemetry"
+        runtime:
+          oneOf:
+            - $ref: "#/components/schemas/RuntimeMetrics"
+            - type: object
+              description: Runtime metrics are unavailable for this degraded health response.
+              maxProperties: 0
+    HealthPingSuccessResponse:
+      type: object
+      required: [status, timestamp, latencyMs]
+      properties:
+        status: { type: string, enum: [ok] }
+        timestamp: { type: string, format: date-time }
+        latencyMs: { type: integer, minimum: 0 }
+    HealthPingFailureResponse:
+      type: object
+      required: [status, error]
+      properties:
+        status: { type: string, enum: [error] }
+        error: { type: string, enum: [db_query_failed, ping_failed] }
+    RuntimeMetrics:
+      type: object
+      additionalProperties: false
+      required: [sampledAt, memory, fileDescriptors, database]
+      properties:
+        sampledAt: { type: string, format: date-time }
+        memory:
+          type: object
+          additionalProperties: false
+          required: [rss, heapUsed, heapTotal, external, arrayBuffers, v8HeapLimit]
+          properties:
+            rss: { type: integer, minimum: 0 }
+            heapUsed: { type: integer, minimum: 0 }
+            heapTotal: { type: integer, minimum: 0 }
+            external: { type: integer, minimum: 0 }
+            arrayBuffers: { type: integer, minimum: 0 }
+            v8HeapLimit: { type: integer, minimum: 0 }
+        fileDescriptors:
+          type: [integer, "null"]
+          minimum: 0
+        database:
+          type: object
+          additionalProperties: false
+          required: [bytes, walBytes]
+          properties:
+            bytes:
+              type: [integer, "null"]
+              minimum: 0
+            walBytes:
+              type: [integer, "null"]
+              minimum: 0
+        activity:
+          type: object
+          additionalProperties: false
+          required:
+            [
+              activeAccountSlots,
+              pendingAccountSlots,
+              pendingRateLimitRequests,
+              pendingDeduplicatedRequests,
+              activeUpstreamAttempts,
+              activeUpstreamStreams,
+            ]
+          properties:
+            activeAccountSlots: { type: integer, minimum: 0 }
+            pendingAccountSlots: { type: integer, minimum: 0 }
+            pendingRateLimitRequests: { type: integer, minimum: 0 }
+            pendingDeduplicatedRequests: { type: integer, minimum: 0 }
+            activeUpstreamAttempts: { type: integer, minimum: 0 }
+            activeUpstreamStreams: { type: integer, minimum: 0 }
+    CapacityTelemetry:
+      type: object
+      required: [generatedAt, staleAfterSeconds, stale, truncation, sampling, providers]
+      properties:
+        generatedAt: { type: string, format: date-time }
+        staleAfterSeconds: { type: integer, minimum: 0, example: 5 }
+        stale: { type: boolean }
+        truncation: { $ref: "#/components/schemas/CapacityTruncation" }
+        sampling: { $ref: "#/components/schemas/CapacitySampling" }
+        providers:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/CapacityProvider"
+    CapacityTruncation:
+      type: object
+      required: [providers, accounts, maxProviders, maxCodexAccounts]
+      properties:
+        providers: { type: boolean }
+        accounts: { type: boolean }
+        maxProviders: { type: integer, minimum: 0 }
+        maxCodexAccounts: { type: integer, minimum: 0 }
+    CapacitySampling:
+      type: object
+      description: Provider-level process-local counters; current fields are point-in-time and rolling fields are one-minute bucket aggregates.
+      properties:
+        unavailable: { type: boolean }
+        retention: { type: string }
+        bucketResolution: { type: string }
+        maxProviders: { type: integer }
+        maxCodexAccounts: { type: integer }
+        upstreamErrorCount: { type: string }
+        counterSemantics: { type: string }
+        scope: { type: string }
+        accountIdentifiers: { type: string }
+    CapacityProvider:
+      type: object
+      required:
+        [
+          configuredConcurrencyLimit,
+          effectiveConcurrencyLimit,
+          currentInflight,
+          rolling,
+          queue,
+          accounts,
+        ]
+      properties:
+        configuredConcurrencyLimit: { type: [integer, "null"] }
+        effectiveConcurrencyLimit: { type: [integer, "null"] }
+        currentInflight: { type: integer, minimum: 0 }
+        rolling:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/CapacityRollingWindow" }
+        queue: { $ref: "#/components/schemas/CapacityQueue" }
+        accounts: { $ref: "#/components/schemas/CapacityAccounts" }
+        codexAccounts:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/CapacityAccount" }
+    CapacityQueue:
+      type: object
+      required: [depth, accountSemaphoreDepth, rateLimitDepth]
+      properties:
+        depth: { type: integer, minimum: 0 }
+        accountSemaphoreDepth: { type: integer, minimum: 0 }
+        rateLimitDepth: { type: integer, minimum: 0 }
+    CapacityRollingWindow:
+      type: object
+      required: [peakInflight, peakQueueDepth, waits, waitMs, rejected, upstreamErrors]
+      properties:
+        peakInflight: { type: integer, minimum: 0 }
+        peakQueueDepth: { type: integer, minimum: 0 }
+        waits: { type: integer, minimum: 0 }
+        waitMs: { type: integer, minimum: 0 }
+        rejected: { type: integer, minimum: 0 }
+        upstreamErrors:
+          type: object
+          required: ["429", "502", "503"]
+          properties:
+            "429": { type: integer, minimum: 0 }
+            "502": { type: integer, minimum: 0 }
+            "503": { type: integer, minimum: 0 }
+    CapacityAccounts:
+      type: object
+      required: [configured, available, coolingDown, rateLimited, quotaExhausted]
+      properties:
+        configured: { type: integer, minimum: 0 }
+        available: { type: integer, minimum: 0 }
+        coolingDown: { type: integer, minimum: 0 }
+        rateLimited: { type: integer, minimum: 0 }
+        quotaExhausted: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        returned: { type: integer, minimum: 0 }
+    CapacityAccount:
+      type: object
+      required:
+        [
+          planType,
+          configuredConcurrencyLimit,
+          effectiveConcurrencyLimit,
+          currentInflight,
+          queue,
+          rolling,
+          availability,
+          cooldownReason,
+          cooldownUntil,
+          quota,
+        ]
+      properties:
+        account: { type: string }
+        planType: { type: string }
+        configuredConcurrencyLimit: { type: [integer, "null"] }
+        effectiveConcurrencyLimit: { type: [integer, "null"] }
+        currentInflight: { type: integer, minimum: 0 }
+        queue: { $ref: "#/components/schemas/CapacityQueue" }
+        rolling:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/CapacityRollingWindow" }
+        availability: { type: string }
+        cooldownReason: { type: [string, "null"] }
+        cooldownUntil: { type: [string, "null"], format: date-time }
+        quota:
+          type: [object, "null"]
+          properties:
+            status: { type: string }
+            usagePercent: { type: [number, "null"] }
+            resetAt: { type: [string, "null"] }
     PlaygroundPreset:
       type: object
       required:

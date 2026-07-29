@@ -90,7 +90,7 @@ export async function waitForServer(port, timeout = 60000) {
   return false;
 }
 
-// Polls /api/monitoring/health once and classifies the outcome:
+// Polls /api/health/ping once and classifies the outcome:
 // - "ready": got a 2xx HTTP response.
 // - "fast-reject": got a non-2xx HTTP response, or the connection was
 //   actively refused/reset (not a timeout) — the HTTP server is alive and
@@ -100,7 +100,7 @@ export async function waitForServer(port, timeout = 60000) {
 // - "not-listening": nothing is accepting connections on the port at all.
 async function pollHealthOnce(port) {
   try {
-    const res = await fetch(`http://localhost:${port}/api/monitoring/health`, {
+    const res = await fetch(`http://localhost:${port}/api/health/ping`, {
       signal: AbortSignal.timeout(2000),
     });
     return res.ok ? "ready" : "fast-reject";

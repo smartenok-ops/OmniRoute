@@ -256,7 +256,7 @@ async function waitForServer(
     }
 
     try {
-      const response = await fetch(`${baseUrl}/api/monitoring/health`, {
+      const response = await fetch(`${baseUrl}/api/health/ping`, {
         signal: AbortSignal.timeout(5_000),
       });
       if (response.ok) return;

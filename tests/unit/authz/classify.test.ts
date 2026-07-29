@@ -130,10 +130,10 @@ const cases: Case[] = [
   },
   { name: "/api/init is PUBLIC", path: "/api/init", method: "POST", expectedClass: "PUBLIC" },
   {
-    name: "/api/monitoring/health is PUBLIC",
+    name: "/api/monitoring/health is MANAGEMENT",
     path: "/api/monitoring/health",
     method: "GET",
-    expectedClass: "PUBLIC",
+    expectedClass: "MANAGEMENT",
   },
   {
     name: "/api/health/ping is PUBLIC",

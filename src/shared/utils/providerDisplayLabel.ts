@@ -10,32 +10,38 @@
  *          is not an openai-compatible-* or anthropic-compatible-* provider (caller
  *          should use its own default in that case).
  */
+const COMPATIBLE_PROVIDER_TYPES = [
+  { prefix: "openai-compatible-", label: "OAI" },
+  { prefix: "anthropic-compatible-", label: "ANT" },
+] as const;
+
+type CompatibleProviderType = (typeof COMPATIBLE_PROVIDER_TYPES)[number];
+
+function getCompatibleProviderType(provider: string): CompatibleProviderType | undefined {
+  return COMPATIBLE_PROVIDER_TYPES.find((type) => provider.startsWith(type.prefix));
+}
+
+function getCompatibleProviderFallback(
+  provider: string,
+  compatibleType: CompatibleProviderType
+): string {
+  const suffix = provider.slice(compatibleType.prefix.length);
+  const parts = suffix.split("-");
+  if (parts.length > 1 && parts[1]?.length >= 8) return `${compatibleType.label}-COMPAT`;
+  return `${compatibleType.label}: ${suffix.slice(0, 16).toUpperCase()}`;
+}
+
 export function getProviderDisplayLabel(
   provider: string,
   providerNodes?: Array<{ id?: string; prefix?: string; name?: string }>
 ): string | null {
   if (!provider) return "-";
-  if (provider.startsWith("openai-compatible-") || provider.startsWith("anthropic-compatible-")) {
-    // Try to find user-defined name from provider nodes
-    if (providerNodes?.length) {
-      const matchedNode = providerNodes.find(
-        (node) => node.id === provider || node.prefix === provider
-      );
-      if (matchedNode?.name) return matchedNode.name;
-    }
-    // Fallback to generic labels
-    if (provider.startsWith("openai-compatible-")) {
-      const suffix = provider.replace("openai-compatible-", "");
-      const parts = suffix.split("-");
-      if (parts.length > 1 && parts[1]?.length >= 8) return `OAI-COMPAT`;
-      return `OAI: ${suffix.slice(0, 16).toUpperCase()}`;
-    }
-    if (provider.startsWith("anthropic-compatible-")) {
-      const suffix = provider.replace("anthropic-compatible-", "");
-      const parts = suffix.split("-");
-      if (parts.length > 1 && parts[1]?.length >= 8) return `ANT-COMPAT`;
-      return `ANT: ${suffix.slice(0, 16).toUpperCase()}`;
-    }
-  }
-  return null; // Not a compatible provider, use default PROVIDER_COLORS
+
+  const compatibleType = getCompatibleProviderType(provider);
+  if (!compatibleType) return null;
+
+  const matchedNode = providerNodes?.find(
+    (node) => node.id === provider || node.prefix === provider
+  );
+  return matchedNode?.name || getCompatibleProviderFallback(provider, compatibleType);
 }

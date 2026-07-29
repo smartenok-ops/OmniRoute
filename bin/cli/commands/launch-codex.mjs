@@ -80,7 +80,7 @@ export function resolveCodexTarget(opts = {}) {
 /** Health-check an OmniRoute root URL before launching Codex. */
 async function healthCheck(baseUrl, timeoutMs = 3000) {
   try {
-    const res = await fetch(`${baseUrl}/api/monitoring/health`, {
+    const res = await fetch(`${baseUrl}/api/health/ping`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     return res.ok;

@@ -25,9 +25,9 @@ test("isPublicApiRoute allows readonly health and require-login bootstrap routes
   assert.equal(isPublicApiRoute("/api/health/ping", "OPTIONS"), true);
   assert.equal(isPublicApiRoute("/api/health/ping", "DELETE"), false);
 
-  assert.equal(isPublicApiRoute("/api/monitoring/health", "GET"), true);
-  assert.equal(isPublicApiRoute("/api/monitoring/health", "HEAD"), true);
-  assert.equal(isPublicApiRoute("/api/monitoring/health", "OPTIONS"), true);
+  assert.equal(isPublicApiRoute("/api/monitoring/health", "GET"), false);
+  assert.equal(isPublicApiRoute("/api/monitoring/health", "HEAD"), false);
+  assert.equal(isPublicApiRoute("/api/monitoring/health", "OPTIONS"), false);
   assert.equal(isPublicApiRoute("/api/monitoring/health", "DELETE"), false);
 
   assert.equal(isPublicApiRoute("/api/settings/require-login", "GET"), true);

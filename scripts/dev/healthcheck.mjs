@@ -2,7 +2,7 @@
 
 /**
  * Docker healthcheck script for OmniRoute.
- * Probes the /api/monitoring/health endpoint on the dashboard port.
+ * Probes the unauthenticated /api/health/ping liveness endpoint on the dashboard port.
  * Used by Dockerfile and docker-compose files.
  *
  * #3151 — in some Docker network setups the server binds to a container IP and
@@ -48,7 +48,7 @@ function getContainerInternalIP() {
  */
 function healthUrl(host, port) {
   const hostPart = host.includes(":") ? `[${host}]` : host;
-  return `http://${hostPart}:${port}/api/monitoring/health`;
+  return `http://${hostPart}:${port}/api/health/ping`;
 }
 
 /**

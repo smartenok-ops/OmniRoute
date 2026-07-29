@@ -1,68 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Spinner } from "@/shared/components/Loading";
-
-interface HealthPayload {
-  status?: string;
-  timestamp?: string;
-  system?: {
-    version?: string;
-    uptime?: number;
-    nodeVersion?: string;
-    platform?: string;
-    pid?: number;
-  };
-  providerHealth?: Record<string, { state?: string; failures?: number }>;
-  error?: string;
-}
-
-function formatUptime(seconds?: number) {
-  if (!seconds || seconds <= 0) return "0m";
-  const total = Math.floor(seconds);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-}
+import { fetchPublicStatusLiveness, type PublicStatusLiveness } from "./statusLiveness";
 
 export default function StatusPage() {
   const [loading, setLoading] = useState(true);
-  const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [liveness, setLiveness] = useState<PublicStatusLiveness | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadHealth() {
+  async function loadLiveness() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/monitoring/health", { cache: "no-store" });
-      const data = (await response.json()) as HealthPayload;
-      if (!response.ok) {
-        setError(data.error || "Failed to load system health.");
-        setHealth(null);
-        return;
-      }
-      setHealth(data);
+      setLiveness(await fetchPublicStatusLiveness());
     } catch {
       setError("Unable to reach health endpoint. Check connectivity and retry.");
-      setHealth(null);
+      setLiveness(null);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    void loadHealth();
+    void loadLiveness();
   }, []);
-
-  const providerStats = useMemo(() => {
-    const providers = Object.entries(health?.providerHealth || {});
-    const open = providers.filter(([, p]) => p.state === "OPEN").length;
-    const halfOpen = providers.filter(([, p]) => p.state === "HALF_OPEN").length;
-    const closed = providers.filter(([, p]) => p.state === "CLOSED").length;
-    return { total: providers.length, open, halfOpen, closed };
-  }, [health]);
 
   return (
     <main className="min-h-screen text-text-main p-6 sm:p-10">
@@ -71,11 +34,11 @@ export default function StatusPage() {
           <div>
             <h1 className="text-3xl font-bold tracking-tight">System Status</h1>
             <p className="text-text-muted mt-1">
-              Live operational snapshot for OmniRoute core services.
+              Live public liveness signal for OmniRoute core services.
             </p>
           </div>
           <button
-            onClick={() => void loadHealth()}
+            onClick={() => void loadLiveness()}
             className="inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-br from-primary to-primary-hover text-white transition-all duration-200 motion-reduce:transition-none"
           >
             Refresh
@@ -89,7 +52,7 @@ export default function StatusPage() {
             aria-live="polite"
           >
             <Spinner size="md" />
-            <span className="text-text-muted">Loading health metrics...</span>
+            <span className="text-text-muted">Checking service liveness...</span>
           </div>
         )}
 
@@ -116,39 +79,22 @@ export default function StatusPage() {
           </div>
         )}
 
-        {!loading && health && (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="rounded-xl border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wide text-text-muted">Service</p>
-                <p className="mt-2 text-xl font-semibold">{health.status || "unknown"}</p>
-              </div>
-              <div className="rounded-xl border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wide text-text-muted">Version</p>
-                <p className="mt-2 text-xl font-semibold">{health.system?.version || "n/a"}</p>
-              </div>
-              <div className="rounded-xl border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wide text-text-muted">Uptime</p>
-                <p className="mt-2 text-xl font-semibold">{formatUptime(health.system?.uptime)}</p>
-              </div>
-              <div className="rounded-xl border border-border bg-surface p-4">
-                <p className="text-xs uppercase tracking-wide text-text-muted">Providers Tracked</p>
-                <p className="mt-2 text-xl font-semibold">{providerStats.total}</p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-surface p-6">
-              <h2 className="text-lg font-semibold">Provider Circuit Breaker State</h2>
-              <p className="text-sm text-text-muted mt-1">
-                OPEN: {providerStats.open} · HALF_OPEN: {providerStats.halfOpen} · CLOSED:{" "}
-                {providerStats.closed}
+        {!loading && liveness && (
+          <div
+            className="rounded-xl border border-border bg-surface p-6"
+            role="status"
+            aria-live="polite"
+          >
+            <h2 className="text-lg font-semibold">Public Service Liveness</h2>
+            <p className="mt-2 text-xl font-semibold">Operational</p>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm text-text-muted">
+              <p>
+                Response latency:{" "}
+                <span className="font-medium text-text-main">{liveness.latencyMs} ms</span>
               </p>
-              <p className="mt-4 text-xs text-text-muted">
-                Last update:{" "}
-                {health.timestamp ? new Date(health.timestamp).toLocaleString() : "n/a"}
-              </p>
+              <p>Last update: {new Date(liveness.timestamp).toLocaleString()}</p>
             </div>
-          </>
+          </div>
         )}
       </section>
     </main>

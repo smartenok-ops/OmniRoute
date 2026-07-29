@@ -496,12 +496,12 @@ Response example:
 
 ### Monitoring
 
-| Endpoint                 | Method     | Description                                                                                          |
-| ------------------------ | ---------- | ---------------------------------------------------------------------------------------------------- |
-| `/api/sessions`          | GET        | Active session tracking                                                                              |
-| `/api/rate-limits`       | GET        | Per-account rate limits                                                                              |
-| `/api/monitoring/health` | GET        | Health check + provider summary (`catalogCount`, `configuredCount`, `activeCount`, `monitoredCount`) |
-| `/api/cache/stats`       | GET/DELETE | Cache stats / clear                                                                                  |
+| Endpoint                 | Method     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/api/sessions`          | GET        | Active session tracking                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/rate-limits`       | GET        | Per-account rate limits                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/api/monitoring/health` | GET        | Authenticated health and provider-level capacity summary. `generatedAt`/`staleAfterSeconds` describe freshness; `truncation` reports bounded provider/account output. Current fields are point-in-time; rolling counters use one-minute buckets and reset per process/restart. Raw account labels are omitted unless `OMNIROUTE_TELEMETRY_HMAC_SECRET` configures stable HMAC masking. Unauthenticated callers receive 401. Use `/api/health/ping` for public/Docker liveness. |
+| `/api/cache/stats`       | GET/DELETE | Cache stats / clear                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### Backup & Export/Import
 
@@ -964,17 +964,17 @@ Persistent conversational/factual memory store, scoped per API key / session.
 
 OmniRoute ships an embedded Model Context Protocol server with 3 transports (stdio, SSE, streamable-http) and scoped tools. The dashboard endpoints below read status/audit data and proxy the HTTP transports.
 
-| Method | Path                   | Description                                                                                      |
+| Method | Path | Description |
 | ------ | ---------------------- | ------------------------------------------------------------------------------------------------ | -------------------- |
-| GET    | `/api/mcp/status`      | Heartbeat, transport, online state, last call, top tools, 24h success rate                       |
-| GET    | `/api/mcp/tools`       | List of MCP tools with `name`, `description`, `scopes`, `phase`, `auditLevel`, `sourceEndpoints` |
-| GET    | `/api/mcp/sse`         | Open SSE stream for the SSE transport (returns `503` if MCP disabled or transport mismatch)      |
-| POST   | `/api/mcp/sse`         | Send JSON-RPC frame on the SSE transport                                                         |
-| GET    | `/api/mcp/stream`      | Open SSE side of the Streamable HTTP transport (server-initiated messages)                       |
-| POST   | `/api/mcp/stream`      | Send JSON-RPC frame on the Streamable HTTP transport                                             |
-| DELETE | `/api/mcp/stream`      | End a Streamable HTTP session                                                                    |
-| GET    | `/api/mcp/audit`       | Query audit log — `?limit=`, `?offset=`, `?tool=`, `?success=true                                | false`, `?apiKeyId=` |
-| GET    | `/api/mcp/audit/stats` | Aggregate audit stats (totals, success rate, avg duration, top tools)                            |
+| GET | `/api/mcp/status` | Heartbeat, transport, online state, last call, top tools, 24h success rate |
+| GET | `/api/mcp/tools` | List of MCP tools with `name`, `description`, `scopes`, `phase`, `auditLevel`, `sourceEndpoints` |
+| GET | `/api/mcp/sse` | Open SSE stream for the SSE transport (returns `503` if MCP disabled or transport mismatch) |
+| POST | `/api/mcp/sse` | Send JSON-RPC frame on the SSE transport |
+| GET | `/api/mcp/stream` | Open SSE side of the Streamable HTTP transport (server-initiated messages) |
+| POST | `/api/mcp/stream` | Send JSON-RPC frame on the Streamable HTTP transport |
+| DELETE | `/api/mcp/stream` | End a Streamable HTTP session |
+| GET | `/api/mcp/audit` | Query audit log — `?limit=`, `?offset=`, `?tool=`, `?success=true                                | false`, `?apiKeyId=` |
+| GET | `/api/mcp/audit/stats` | Aggregate audit stats (totals, success rate, avg duration, top tools) |
 
 **Auth:** the `sse`/`stream` transports honor the MCP-specific auth surface (Bearer API key with `mcp` scope); the `status`/`tools`/`audit*` routes are readable from the dashboard (no extra auth required beyond reaching the dashboard host).
 
@@ -1039,18 +1039,18 @@ Returns the public A2A agent card (name, description, capabilities, skill catalo
 
 ## Cloud, Evals & Assess
 
-| Method | Path                            | Description                                                                                       |
+| Method | Path | Description |
 | ------ | ------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------- |
-| POST   | `/api/cloud/auth`               | Verify a Bearer key and return masked provider connections + model aliases for cloud sync clients |
-| POST   | `/api/cloud/credentials/update` | Update encrypted credentials for a cloud-synced provider                                          |
-| POST   | `/api/cloud/model/resolve`      | Resolve a logical model id to a concrete provider/model using the local routing table             |
-| GET    | `/api/cloud/models/alias`       | List model aliases as exposed to cloud sync                                                       |
-| GET    | `/api/assess`                   | Read latest assessment categorizations (per-provider/model)                                       |
-| POST   | `/api/assess`                   | Run an assessment — body: `{scope: {type:"all"}                                                   | {type:"provider", providerId} | {type:"model", modelId}, trigger?}` |
-| GET    | `/api/evals`                    | List built-in eval suites + most recent runs                                                      |
-| POST   | `/api/evals`                    | Trigger an eval run                                                                               |
-| POST   | `/api/evals/suites`             | Create a custom eval suite — body validated by `evalSuiteSaveSchema`                              |
-| GET    | `/api/evals/suites/[id]`        | Retrieve a custom eval suite                                                                      |
+| POST | `/api/cloud/auth` | Verify a Bearer key and return masked provider connections + model aliases for cloud sync clients |
+| POST | `/api/cloud/credentials/update` | Update encrypted credentials for a cloud-synced provider |
+| POST | `/api/cloud/model/resolve` | Resolve a logical model id to a concrete provider/model using the local routing table |
+| GET | `/api/cloud/models/alias` | List model aliases as exposed to cloud sync |
+| GET | `/api/assess` | Read latest assessment categorizations (per-provider/model) |
+| POST | `/api/assess` | Run an assessment — body: `{scope: {type:"all"}                                                   | {type:"provider", providerId} | {type:"model", modelId}, trigger?}` |
+| GET | `/api/evals` | List built-in eval suites + most recent runs |
+| POST | `/api/evals` | Trigger an eval run |
+| POST | `/api/evals/suites` | Create a custom eval suite — body validated by `evalSuiteSaveSchema` |
+| GET | `/api/evals/suites/[id]` | Retrieve a custom eval suite |
 
 **Auth:** `/api/cloud/auth` validates a Bearer key directly; the other `/api/cloud/*`, `/api/evals/*`, and `/api/assess` routes require management session/API key. `/api/assess` POST uses `validateBody` with a discriminated-union scope schema.
 

@@ -13,6 +13,15 @@ const { LOCAL_ONLY_API_PREFIXES, ALWAYS_PROTECTED_API_PATHS } =
 const raw: any = yaml.load(fs.readFileSync(OPENAPI_PATH, "utf-8"));
 const paths: Record<string, any> = raw.paths || {};
 
+test("monitoring health documents its management-authentication response", () => {
+  const monitoringHealth = paths["/api/monitoring/health"]?.get;
+  assert.ok(monitoringHealth, "GET /api/monitoring/health must be documented");
+  assert.equal(
+    monitoringHealth.responses?.["401"]?.$ref,
+    "#/components/responses/ManagementAuthenticationRequired"
+  );
+});
+
 test("every x-loopback-only path matches a LOCAL_ONLY prefix in routeGuard.ts", () => {
   for (const [pathStr, methods] of Object.entries(paths)) {
     if (!methods || typeof methods !== "object") continue;

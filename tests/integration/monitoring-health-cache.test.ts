@@ -21,9 +21,22 @@ process.env.JWT_SECRET = "test-health-cache-secret";
 
 await import("../../src/lib/db/core.ts");
 const { GET, DELETE } = await import("../../src/app/api/monitoring/health/route.ts");
+const { GET: ping } = await import("../../src/app/api/health/ping/route.ts");
+const { SignJWT } = await import("jose");
+const authToken = await new SignJWT({ authenticated: true })
+  .setProtectedHeader({ alg: "HS256" })
+  .setExpirationTime("30d")
+  .sign(new TextEncoder().encode(process.env.JWT_SECRET as string));
+
+function authenticatedHealthRequest(method = "GET"): Request {
+  return new Request("http://localhost/api/monitoring/health", {
+    method,
+    headers: { cookie: `auth_token=${authToken}` },
+  });
+}
 
 async function healthTimestamp(): Promise<string> {
-  const res = await GET();
+  const res = await GET(authenticatedHealthRequest());
   const body = (await res.json()) as { timestamp?: string };
   assert.ok(body.timestamp, "health payload should carry a timestamp");
   return body.timestamp as string;
@@ -35,6 +48,19 @@ test("GET within the TTL serves the cached payload (identical timestamp)", async
   assert.equal(t2, t1, "a second GET within the TTL must return the cached payload");
 });
 
+test("rich monitoring health remains protected while the public liveness probe succeeds", async () => {
+  const localDb = await import("../../src/lib/localDb.ts");
+  await localDb.updateSettings({ requireLogin: false });
+  const response = await GET(new Request("http://localhost/api/monitoring/health"));
+  assert.equal(response.status, 401);
+
+  const liveness = await ping();
+  assert.equal(liveness.status, 200);
+  assert.equal((await liveness.json()).status, "ok");
+
+  await localDb.updateSettings({ requireLogin: true });
+});
+
 test("cache expires after the TTL — a fresh payload is built", async () => {
   const t1 = await healthTimestamp();
   await new Promise((r) => setTimeout(r, 1100)); // TTL is 1000ms
@@ -43,19 +69,8 @@ test("cache expires after the TTL — a fresh payload is built", async () => {
 });
 
 test("DELETE (circuit-breaker reset) invalidates the cache immediately", async () => {
-  const { SignJWT } = await import("jose");
-  const authToken = await new SignJWT({ authenticated: true })
-    .setProtectedHeader({ alg: "HS256" })
-    .setExpirationTime("30d")
-    .sign(new TextEncoder().encode(process.env.JWT_SECRET as string));
-
   const t1 = await healthTimestamp(); // populate cache
-  const delRes = await DELETE(
-    new Request("http://localhost/api/monitoring/health", {
-      method: "DELETE",
-      headers: { cookie: `auth_token=${authToken}` },
-    }),
-  );
+  const delRes = await DELETE(authenticatedHealthRequest("DELETE"));
   assert.ok(delRes.status < 400, `DELETE should succeed, got ${delRes.status}`);
   await new Promise((r) => setTimeout(r, 5)); // ensure the clock advances past ms precision
   const t2 = await healthTimestamp();

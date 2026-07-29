@@ -4,7 +4,11 @@ import { getProviderDisplayLabel } from "../../src/shared/utils/providerDisplayL
 
 test("returns matched node name for openai-compatible UUID id", () => {
   const providerNodes = [
-    { id: "openai-compatible-chat-02669115-2545-4896-b003-cb4dac09d441", prefix: undefined, name: "My Custom OAI" },
+    {
+      id: "openai-compatible-chat-02669115-2545-4896-b003-cb4dac09d441",
+      prefix: undefined,
+      name: "My Custom OAI",
+    },
   ];
   const result = getProviderDisplayLabel(
     "openai-compatible-chat-02669115-2545-4896-b003-cb4dac09d441",
@@ -78,4 +82,9 @@ test("matched node name wins over fallback for anthropic-compatible UUID", () =>
     providerNodes
   );
   assert.equal(result, "My Custom ANT");
+});
+
+test("keeps compatible fallback labels paired with their provider prefix", () => {
+  assert.equal(getProviderDisplayLabel("openai-compatible-gateway"), "OAI: GATEWAY");
+  assert.equal(getProviderDisplayLabel("anthropic-compatible-gateway"), "ANT: GATEWAY");
 });

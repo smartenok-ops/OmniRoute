@@ -19,7 +19,7 @@ const isolatedDataDir =
   process.env.DATA_DIR || join(process.cwd(), ".tmp", "ecosystem-data", String(process.pid));
 const port = explicitBaseUrl ? null : isolatedPort;
 const baseUrl = explicitBaseUrl || `http://127.0.0.1:${isolatedPort}`;
-const healthUrl = `${baseUrl}/api/monitoring/health`;
+const healthUrl = `${baseUrl}/api/health/ping`;
 const maxWaitMs = Number(process.env.ECOSYSTEM_SERVER_WAIT_MS || 180000);
 const pollMs = 2000;
 

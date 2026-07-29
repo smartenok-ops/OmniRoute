@@ -85,6 +85,7 @@ export { SPAWN_CAPABLE_PREFIXES };
 export const LOCAL_ONLY_MANAGE_SCOPE_BYPASS_PREFIXES: ReadonlyArray<string> = ["/api/mcp/"];
 
 export const ALWAYS_PROTECTED_API_PATHS: ReadonlyArray<string> = [
+  "/api/monitoring/health",
   "/api/shutdown",
   "/api/providers/health-autopilot/actions",
   "/api/settings/database",
@@ -166,9 +167,7 @@ export function isPrivateLanHost(hostHeader: string | null): boolean {
  *   triggers the auto-update flow (spawns git checkout + npm install + pm2).
  *   Hard Rules #15/#17 still apply to POST.
  */
-export const LOCAL_ONLY_API_GET_EXEMPTIONS: ReadonlySet<string> = new Set([
-  "/api/system/version",
-]);
+export const LOCAL_ONLY_API_GET_EXEMPTIONS: ReadonlySet<string> = new Set(["/api/system/version"]);
 
 /** Safe HTTP methods that can be exempted for read-only paths. */
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

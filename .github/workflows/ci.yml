@@ -556,7 +556,7 @@ jobs:
       # Turbopack production build (Next 16, stable): benchmarked 1.9× faster than the
       # webpack pass (9min0s vs 17min15s on a 32-core box; multi-core Rust vs webpack's
       # single-threaded compile). Standalone output smoke-validated (server boots,
-      # /api/monitoring/health 200). Downstream jobs (e2e ×9, package-artifact,
+      # /api/health/ping 200). Downstream jobs (e2e ×9, package-artifact,
       # electron-package-smoke) consume this artifact, so a green run here validates
       # the Turbopack artifact end-to-end.
       - run: npm run build

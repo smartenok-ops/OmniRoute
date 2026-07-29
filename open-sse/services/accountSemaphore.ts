@@ -6,6 +6,8 @@
  * the gate is unblocked, or the queue timeout expires.
  */
 
+import { recordSemaphoreQueueEvent, recordSemaphoreState } from "./capacityTelemetry.ts";
+
 export interface AccountSemaphoreKeyParts {
   provider: string;
   accountKey: string;
@@ -15,6 +17,7 @@ interface QueuedAcquire {
   resolve: (release: () => void) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  queuedAt: number;
 }
 
 interface AccountGate {
@@ -130,6 +133,8 @@ function drainQueue(semaphoreKey: string): void {
     if (!next) break;
     clearTimeout(next.timer);
     gate.running++;
+    recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
+    recordSemaphoreQueueEvent(semaphoreKey, "wait", Date.now() - next.queuedAt);
     next.resolve(createReleaseFn(semaphoreKey));
   }
 
@@ -150,6 +155,7 @@ function createReleaseFn(semaphoreKey: string): () => void {
     if (gate.running > 0) {
       gate.running--;
     }
+    recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
 
     if (gate.queue.length > 0) {
       drainQueue(semaphoreKey);
@@ -205,6 +211,7 @@ export function acquire(
 
   if (gate.running < gate.maxConcurrency && !isBlocked(gate)) {
     gate.running++;
+    recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
     return Promise.resolve(createReleaseFn(semaphoreKey));
   }
 
@@ -213,6 +220,7 @@ export function acquire(
       code: string;
     };
     err.code = "SEMAPHORE_QUEUE_FULL";
+    recordSemaphoreQueueEvent(semaphoreKey, "rejected");
     return Promise.reject(err);
   }
 
@@ -236,6 +244,11 @@ export function acquire(
       const queueIndex = nextGate.queue.findIndex((item) => item.timer === timer);
       if (queueIndex !== -1) {
         nextGate.queue.splice(queueIndex, 1);
+        recordSemaphoreQueueEvent(semaphoreKey, "rejected");
+        recordSemaphoreState(semaphoreKey, {
+          running: nextGate.running,
+          queued: nextGate.queue.length,
+        });
       }
 
       if (nextGate.running === 0 && nextGate.queue.length === 0) {
@@ -257,9 +270,11 @@ export function acquire(
         reject(error);
       },
       timer,
+      queuedAt: Date.now(),
     };
 
     gate.queue.push(queueItem);
+    recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
 
     if (signal) {
       abortListener = () => {
@@ -275,6 +290,10 @@ export function acquire(
         const queueIndex = nextGate.queue.findIndex((item) => item.timer === timer);
         if (queueIndex !== -1) {
           nextGate.queue.splice(queueIndex, 1);
+          recordSemaphoreState(semaphoreKey, {
+            running: nextGate.running,
+            queued: nextGate.queue.length,
+          });
         }
 
         if (nextGate.running === 0 && nextGate.queue.length === 0) {
@@ -301,6 +320,7 @@ export function markBlocked(semaphoreKey: string, cooldownMs: number): void {
     const gate = gates.get(semaphoreKey);
     if (!gate) return;
     gate.blockedUntil = null;
+    recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
     drainQueue(semaphoreKey);
     return;
   }
@@ -308,12 +328,17 @@ export function markBlocked(semaphoreKey: string, cooldownMs: number): void {
   const gate = gates.get(semaphoreKey) ?? ensureGate(semaphoreKey, 1);
   clearCleanupTimer(gate);
   gate.blockedUntil = Date.now() + safeCooldownMs;
+  recordSemaphoreState(semaphoreKey, { running: gate.running, queued: gate.queue.length });
 
   const timer = setTimeout(() => {
     const nextGate = gates.get(semaphoreKey);
     if (!nextGate) return;
     if (nextGate.blockedUntil && Date.now() >= nextGate.blockedUntil) {
       nextGate.blockedUntil = null;
+      recordSemaphoreState(semaphoreKey, {
+        running: nextGate.running,
+        queued: nextGate.queue.length,
+      });
       drainQueue(semaphoreKey);
       if (nextGate.running === 0 && nextGate.queue.length === 0) {
         scheduleCleanup(semaphoreKey);

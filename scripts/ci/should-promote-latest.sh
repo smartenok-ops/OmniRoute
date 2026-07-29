@@ -25,7 +25,13 @@ VERSION="${1:?version required}"
 # A pre-release VERSION must never grab :latest (callers already short-circuit
 # this, but stay safe as a standalone unit).
 case "$VERSION" in
-  *-*) echo "false"; exit 0 ;;
+  *-*)
+    # Callers pipe candidate tags to this helper. Drain them before exiting so
+    # a prerelease decision cannot close the pipe while its writer is active.
+    cat >/dev/null
+    echo "false"
+    exit 0
+    ;;
 esac
 
 # Build the stable candidate set: incoming tags (v-stripped, pre-releases
