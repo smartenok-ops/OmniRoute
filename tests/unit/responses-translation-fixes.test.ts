@@ -180,6 +180,44 @@ test("Codex Responses input: assistant history normalized to output_text (OpenAI
   ]);
 });
 
+test("Codex Responses input: replayed output_text is normalized for user and developer roles", () => {
+  const body: Record<string, unknown> = {
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "output_text", text: "Continue after the attachment", annotations: [] },
+          { type: "input_image", image_url: "https://example.com/audit.png", detail: "high" },
+        ],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "output_text", text: "Keep the audit read-only", logprobs: [] }],
+      },
+    ],
+  };
+
+  normalizeCodexResponsesInput(body);
+
+  assert.deepEqual(body.input, [
+    {
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: "Continue after the attachment" },
+        { type: "input_image", image_url: "https://example.com/audit.png", detail: "high" },
+      ],
+    },
+    {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "Keep the audit read-only" }],
+    },
+  ]);
+});
+
 test("Responses→Chat: null input normalizes to an empty list (not [null])", () => {
   assert.deepEqual(normalizeResponsesInputForChat(null), []);
 });
