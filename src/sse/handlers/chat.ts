@@ -82,6 +82,8 @@ import {
   withSelectedConnectionHeader,
   withCorrelationId,
 } from "./chatHelpers";
+import { CodexLocalCapacityOverflow } from "./codexLocalCapacityOverflow";
+import { intersectAllowedConnectionIds } from "./allowedConnections";
 import { connectionHasExtraKeys } from "@omniroute/open-sse/services/apiKeyRotator.ts";
 
 // Pipeline integration — wired modules
@@ -184,25 +186,6 @@ async function getCombosCachedForChat(): Promise<unknown[]> {
   combosCacheVersionSnapshot = getCombosCacheVersion();
   combosCachePromise = getCombos().catch(() => []);
   return combosCachePromise;
-}
-
-function normalizeAllowedConnectionIds(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const ids = value.filter(
-    (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
-  );
-  return ids.length > 0 ? ids : null;
-}
-
-function intersectAllowedConnectionIds(primary: unknown, secondary: unknown): string[] | null {
-  const first = normalizeAllowedConnectionIds(primary);
-  const second = normalizeAllowedConnectionIds(secondary);
-
-  if (first && second) {
-    return first.filter((id) => second.includes(id));
-  }
-
-  return first || second || null;
 }
 
 const PROVIDER_BREAKER_FAILURE_STATUSES = new Set([408, 500, 502, 503, 504]);
@@ -1212,6 +1195,7 @@ async function handleSingleModelChat(
   // re-attempt to exactly one for the whole request. Declared outside both retry
   // loops so it can never reset and loop.
   let streamEarlyEofRetries = 0;
+  const codexOverflow = new CodexLocalCapacityOverflow();
 
   requestAttemptLoop: while (true) {
     const excludedConnectionIds = new Set<string>();
@@ -1231,7 +1215,7 @@ async function handleSingleModelChat(
               model,
               {
                 sessionKey: runtimeOptions.sessionAffinityKey ?? runtimeOptions.sessionId ?? null,
-                excludeConnectionIds: Array.from(excludedConnectionIds),
+                ...codexOverflow.credentialSelectionOptions(excludedConnectionIds),
                 ...(runtimeOptions.allowRateLimitedConnection
                   ? { allowRateLimitedConnections: true }
                   : {}),
@@ -1402,7 +1386,9 @@ async function handleSingleModelChat(
         modelApiFormat: apiFormat,
         providerProfile,
         cachedSettings: runtimeOptions.cachedSettings,
-        skipUpstreamRetry: runtimeOptions.skipUpstreamRetry ?? false,
+        skipUpstreamRetry: codexOverflow.shouldSkipUpstreamRetry(
+          runtimeOptions.skipUpstreamRetry ?? false
+        ),
         correlationId: runtimeOptions?.correlationId ?? null,
         modelPinned: runtimeOptions?.modelPinned ?? false,
       });
@@ -1442,6 +1428,10 @@ async function handleSingleModelChat(
         if (telemetry) telemetry.startPhase("finalize");
         if (telemetry) telemetry.endPhase();
         return result.response;
+      }
+
+      if (codexOverflow.isAlternateAttempt) {
+        return withSelectedConnectionHeader(result.response, credentials?.connectionId);
       }
 
       const isAntigravityStreamReadinessFailure =
@@ -1576,9 +1566,18 @@ async function handleSingleModelChat(
       }
 
       if (result.errorType === "account_semaphore_capacity") {
-        // Local concurrency pressure is not an upstream quota failure. Prefer another
-        // account when possible; pinned combo steps fall through to combo orchestration.
-        if (hasForcedConnection) {
+        if (codexOverflow.shouldAttemptResult(provider, result, hasForcedConnection)) {
+          ({ error: lastError, status: lastStatus } = codexOverflow.beginResultRetry(
+            credentials.connectionId,
+            result,
+            excludedConnectionIds
+          ));
+          requestRetryLastError = lastError;
+          requestRetryLastStatus = lastStatus;
+          continue;
+        }
+
+        if (provider === "codex" || hasForcedConnection) {
           return withSelectedConnectionHeader(result.response, credentials?.connectionId);
         }
 

@@ -61,7 +61,8 @@ import {
   applySessionAffinityPin,
   formatSessionKeyForLog,
   resolveSessionAffinityTtlMs,
-  selectSessionAffinityConnection,
+  selectSessionAffinityConnectionUnlessPreserved,
+  type AffinityPinOptions,
 } from "./sessionAffinityPin";
 import { isNoAuthProviderBlockedBySettings } from "./noAuthProviderSettings";
 import { resolveAccountProxiesFromRegistry } from "./noAuthProxyResolution";
@@ -110,14 +111,9 @@ interface RecoverableConnectionState {
   lastErrorSource?: string | null;
 }
 
-interface CredentialSelectionOptions {
-  allowSuppressedConnections?: boolean;
-  allowRateLimitedConnections?: boolean;
-  bypassQuotaPolicy?: boolean;
+interface CredentialSelectionOptions extends AffinityPinOptions {
   forcedConnectionId?: string | null;
   excludeConnectionIds?: string[] | null;
-  sessionKey?: string | null;
-  sessionAffinityTtlMs?: number | null;
 }
 
 interface CooldownInspectionState {
@@ -1485,9 +1481,9 @@ export async function getProviderCredentials(
       (typeof settings.fallbackStrategy === "string" ? settings.fallbackStrategy : "fill-first");
 
     let connection;
-    const affinityConnection = await selectSessionAffinityConnection(
+    const affinityConnection = await selectSessionAffinityConnectionUnlessPreserved(
       provider,
-      options.sessionKey,
+      options,
       orderedConnections,
       sessionAffinityTtlMs,
       strategy
