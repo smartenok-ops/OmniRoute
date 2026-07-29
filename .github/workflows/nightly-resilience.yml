@@ -60,7 +60,7 @@ jobs:
           node dist/server.js > server.log 2>&1 &
           echo $! > server.pid
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:20128/api/monitoring/health >/dev/null; then echo "server up"; break; fi
+            if curl -sf http://localhost:20128/api/health/ping >/dev/null; then echo "server up"; break; fi
             sleep 2
           done
       - name: Install k6
@@ -79,7 +79,7 @@ jobs:
     name: A11y axe (nightly, freeze-and-alert)
     runs-on: ubuntu-latest
     # The Playwright webServer (`start` mode) builds Next via build-next-isolated.mjs and
-    # boots the standalone server itself (waits on /api/monitoring/health, 15min webServer
+    # boots the standalone server itself (waits on /api/health/ping, 15min webServer
     # timeout). Unlike the per-PR test-e2e job, this nightly job has no pre-built artifact,
     # so it self-builds — hence the generous job timeout. REQUIRE_AXE=1 makes the suite run
     # the real axe analysis (the 4 page tests are gated to nightly so per-PR e2e stays fast)
