@@ -131,7 +131,7 @@ jobs:
             arch: arm64
     env:
       IMAGE_NAME: diegosouzapw/omniroute
-      GHCR_IMAGE_NAME: ghcr.io/diegosouzapw/omniroute
+      GHCR_IMAGE_NAME: ghcr.io/smartenok-ops/omniroute
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -237,7 +237,7 @@ jobs:
       security-events: write
     env:
       IMAGE_NAME: diegosouzapw/omniroute
-      GHCR_IMAGE_NAME: ghcr.io/diegosouzapw/omniroute
+      GHCR_IMAGE_NAME: ghcr.io/smartenok-ops/omniroute
       VERSION: ${{ needs.prepare.outputs.version }}
       PROMOTE_LATEST: ${{ needs.prepare.outputs.promote_latest }}
     steps:
