@@ -37,7 +37,6 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       promote_latest: ${{ steps.version.outputs.promote_latest }}
-      skip: ${{ steps.version.outputs.skip }}
     env:
       IMAGE_NAME: diegosouzapw/omniroute
     steps:
@@ -49,7 +48,7 @@ jobs:
           # Need full tag history for semver comparison when deciding :latest.
           fetch-depth: 0
 
-      - name: Resolve version, latest-promotion, and skip flag
+      - name: Resolve version and latest-promotion
         id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -109,23 +108,13 @@ jobs:
           fi
           echo "promote_latest=$PROMOTE" >> "$GITHUB_OUTPUT"
 
-          # 3) Skip if this exact version is already published in Docker Hub.
-          #    `main` is always rebuilt (mutable floating tag).
-          SKIP="false"
-          if [ "$VERSION" != "main" ]; then
-            if docker manifest inspect "diegosouzapw/omniroute:${VERSION}" >/dev/null 2>&1; then
-              echo "Image diegosouzapw/omniroute:${VERSION} already exists on Docker Hub — skipping rebuild."
-              SKIP="true"
-            fi
-          fi
-          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
-
-          echo "Publishing diegosouzapw/omniroute:$VERSION (promote_latest=$PROMOTE, skip=$SKIP)"
+          # Always publish the requested version. Docker Hub is optional, while
+          # GHCR is required and may need a repair even if Hub already has a tag.
+          echo "Publishing diegosouzapw/omniroute:$VERSION (promote_latest=$PROMOTE)"
 
   build:
     name: Build Docker (${{ matrix.platform }})
     needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -238,7 +227,6 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
