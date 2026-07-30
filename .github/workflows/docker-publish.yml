@@ -155,6 +155,12 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
+        id: dockerhub-login
+        # GHCR is the required publication path. Keep Docker Hub publishing when
+        # its credentials are configured, but do not block GHCR on unavailable
+        # Docker Hub secrets or a transient Docker Hub login failure.
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        continue-on-error: true
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -176,7 +182,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: |
-            ${{ env.IMAGE_NAME }}
+            ${{ steps.dockerhub-login.outcome == 'success' && env.IMAGE_NAME || '' }}
             ${{ env.GHCR_IMAGE_NAME }}
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: type=gha,scope=docker-${{ matrix.arch }},mode=max
@@ -193,7 +199,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: |
-            ${{ env.IMAGE_NAME }}
+            ${{ steps.dockerhub-login.outcome == 'success' && env.IMAGE_NAME || '' }}
             ${{ env.GHCR_IMAGE_NAME }}
           cache-from: type=gha,scope=docker-web-${{ matrix.arch }}
           cache-to: type=gha,scope=docker-web-${{ matrix.arch }},mode=max
@@ -255,6 +261,12 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
+        id: dockerhub-login
+        # GHCR is the required publication path. Keep Docker Hub publishing when
+        # its credentials are configured, but do not block GHCR on unavailable
+        # Docker Hub secrets or a transient Docker Hub login failure.
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        continue-on-error: true
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -282,6 +294,7 @@ jobs:
           merge-multiple: true
 
       - name: Create Docker Hub manifest
+        if: steps.dockerhub-login.outcome == 'success'
         run: |
           set -euo pipefail
 
@@ -332,7 +345,7 @@ jobs:
       - name: Inspect image
         if: needs.prepare.outputs.version != 'main'
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
+          docker buildx imagetools inspect "${GHCR_IMAGE_NAME}:${VERSION}"
 
       - name: Generate CycloneDX SBOM (image, advisory)
         if: needs.prepare.outputs.version != 'main'
@@ -398,7 +411,7 @@ jobs:
       - name: Update Docker Hub description
         # Only refresh README/description when we actually promote :latest
         # (avoids overwriting from main pushes or back-fill builds).
-        if: needs.prepare.outputs.promote_latest == 'true'
+        if: needs.prepare.outputs.promote_latest == 'true' && steps.dockerhub-login.outcome == 'success'
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
