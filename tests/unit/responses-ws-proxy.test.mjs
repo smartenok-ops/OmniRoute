@@ -279,6 +279,203 @@ test("responses ws proxy logs prepare failures to request history", async () => 
   await close(server);
 });
 
+test("responses ws proxy retries a pre-output insufficient_quota on the next allowed connection", async () => {
+  const internalRequests = [];
+  const downstreamMessages = [];
+  const upstreamSends = [];
+  let prepareCount = 0;
+
+  const server = http.createServer(async (req, res) => {
+    if (
+      new URL(req.url || "/", `http://${req.headers.host}`).pathname !==
+      "/api/internal/codex-responses-ws"
+    ) {
+      res.writeHead(404).end();
+      return;
+    }
+    const body = JSON.parse((await readRequestBody(req)) || "{}");
+    internalRequests.push(body);
+    if (
+      body.action === "authenticate" ||
+      body.action === "report_quota_failure" ||
+      body.action === "log"
+    ) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (body.action === "prepare") {
+      prepareCount += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          upstreamUrl: "wss://chatgpt.com/backend-api/codex/responses",
+          headers: {},
+          connectionId: `conn_${prepareCount}`,
+          provider: "codex",
+          model: "gpt-5.5",
+          response: { ...body.response, model: "gpt-5.5" },
+        })
+      );
+    }
+  });
+
+  const firstUpstream = {
+    send(data) {
+      upstreamSends.push(["first", JSON.parse(data)]);
+      queueMicrotask(() =>
+        firstUpstream.onmessage?.({
+          data: JSON.stringify({
+            type: "response.failed",
+            response: { status: "failed", error: { code: "insufficient_quota", message: "limit" } },
+          }),
+        })
+      );
+    },
+    close() {},
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+  const secondUpstream = {
+    send(data) {
+      upstreamSends.push(["second", JSON.parse(data)]);
+      queueMicrotask(() =>
+        secondUpstream.onmessage?.({
+          data: JSON.stringify({ type: "response.completed", response: { status: "completed" } }),
+        })
+      );
+    },
+    close() {},
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+
+  const port = await listen(server);
+  const proxy = createResponsesWsProxy({
+    baseUrl: `http://127.0.0.1:${port}`,
+    bridgeSecret: "bridge-secret",
+    pingIntervalMs: 1000,
+    idleTimeoutMs: 10000,
+    wsFactory: async () => (prepareCount === 1 ? firstUpstream : secondUpstream),
+  });
+  server.on("upgrade", async (req, socket, head) => {
+    if (!(await proxy.handleUpgrade(req, socket, head)) && !socket.destroyed) socket.destroy();
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/responses?api_key=local-token`);
+  ws.addEventListener("message", (event) =>
+    downstreamMessages.push(JSON.parse(String(event.data)))
+  );
+  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
+  ws.send(JSON.stringify({ type: "response.create", model: "gpt-5.5", input: "hello" }));
+
+  await waitFor(() => downstreamMessages.find((entry) => entry.type === "response.completed"));
+  assert.equal(downstreamMessages.filter((entry) => entry.type === "response.failed").length, 0);
+  assert.equal(prepareCount, 2);
+  assert.deepEqual(
+    internalRequests.find((entry) => entry.action === "prepare").excludeConnectionIds,
+    []
+  );
+  assert.deepEqual(
+    internalRequests.filter((entry) => entry.action === "prepare")[1].excludeConnectionIds,
+    ["conn_1"]
+  );
+  assert.equal(
+    internalRequests.filter((entry) => entry.action === "report_quota_failure")[0].connectionId,
+    "conn_1"
+  );
+  assert.equal(upstreamSends.length, 2);
+
+  ws.close();
+  await close(server);
+});
+
+test("responses ws proxy forwards one terminal quota failure after bounded attempts are exhausted", async () => {
+  const downstreamMessages = [];
+  let prepareCount = 0;
+  const server = http.createServer(async (req, res) => {
+    if (
+      new URL(req.url || "/", `http://${req.headers.host}`).pathname !==
+      "/api/internal/codex-responses-ws"
+    ) {
+      res.writeHead(404).end();
+      return;
+    }
+    const body = JSON.parse((await readRequestBody(req)) || "{}");
+    if (
+      body.action === "authenticate" ||
+      body.action === "report_quota_failure" ||
+      body.action === "log"
+    ) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (body.action === "prepare") {
+      prepareCount += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          upstreamUrl: "wss://test",
+          headers: {},
+          connectionId: `conn_${prepareCount}`,
+          provider: "codex",
+          model: "gpt-5.5",
+          response: { ...body.response, model: "gpt-5.5" },
+        })
+      );
+    }
+  });
+  const makeQuotaUpstream = () => ({
+    send() {
+      queueMicrotask(() =>
+        this.onmessage?.({
+          data: JSON.stringify({
+            type: "response.failed",
+            response: { status: "failed", error: { code: "insufficient_quota", message: "limit" } },
+          }),
+        })
+      );
+    },
+    close() {},
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  });
+  const port = await listen(server);
+  const proxy = createResponsesWsProxy({
+    baseUrl: `http://127.0.0.1:${port}`,
+    bridgeSecret: "bridge-secret",
+    pingIntervalMs: 1000,
+    idleTimeoutMs: 10000,
+    maxQuotaFailoverAttempts: 2,
+    wsFactory: async () => makeQuotaUpstream(),
+  });
+  server.on("upgrade", async (req, socket, head) => {
+    if (!(await proxy.handleUpgrade(req, socket, head)) && !socket.destroyed) socket.destroy();
+  });
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/responses?api_key=local-token`);
+  ws.addEventListener("message", (event) =>
+    downstreamMessages.push(JSON.parse(String(event.data)))
+  );
+  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
+  ws.send(JSON.stringify({ type: "response.create", model: "gpt-5.5", input: "hello" }));
+
+  await waitFor(() => downstreamMessages.length === 1);
+  assert.equal(prepareCount, 2);
+  assert.equal(downstreamMessages[0].type, "response.failed");
+  assert.equal(downstreamMessages[0].response.error.code, "insufficient_quota");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(downstreamMessages.length, 1, "must not duplicate terminal frames");
+
+  ws.close();
+  await close(server);
+});
+
 test("responses ws proxy serializes client frames while upstream prepare is pending", async () => {
   const internalRequests = [];
   const upstreamSends = [];

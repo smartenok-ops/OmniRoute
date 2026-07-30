@@ -5,7 +5,10 @@ import { CodexExecutor } from "@omniroute/open-sse/executors/codex.ts";
 import { getApiKeyMetadata } from "@/lib/db/apiKeys";
 import { authorizeWebSocketHandshake, extractWsTokenFromRequest } from "@/lib/ws/handshake";
 import { getModelInfo } from "@/sse/services/model";
-import { getProviderCredentialsWithQuotaPreflight } from "@/sse/services/auth";
+import {
+  getProviderCredentialsWithQuotaPreflight,
+  markAccountUnavailable,
+} from "@/sse/services/auth";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { checkAndRefreshToken } from "@/sse/services/tokenRefresh";
 import { resolveCodexWsModelInfo } from "./modelResolution";
@@ -391,6 +394,15 @@ async function prepare(body: JsonRecord) {
     metadata && Array.isArray(metadata.allowedConnections) && metadata.allowedConnections.length > 0
       ? metadata.allowedConnections
       : null;
+  // The WS proxy retries only a terminal quota failure that arrived before it
+  // forwarded anything to the client. Keep those retries in this key's own
+  // permitted pool: exclusions merely ask the native selector for its next
+  // eligible connection, they never widen `allowedConnections`.
+  const excludeConnectionIds = Array.isArray(body.excludeConnectionIds)
+    ? body.excludeConnectionIds.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0
+      )
+    : [];
 
   // codex-only bridge: re-resolve bare ChatGPT model ids (the Codex CLI rejects
   // provider-prefixed ids client-side over WebSocket) as codex models.
@@ -410,7 +422,8 @@ async function prepare(body: JsonRecord) {
     provider,
     null,
     allowedConnections,
-    model
+    model,
+    { excludeConnectionIds }
   );
 
   if (!credentials || "allRateLimited" in credentials) {
@@ -467,6 +480,20 @@ async function prepare(body: JsonRecord) {
     proxy,
     response: transformed,
   });
+}
+
+async function reportQuotaFailure(body: JsonRecord) {
+  const connectionId = toStringOrNull(body.connectionId);
+  const model = toStringOrNull(body.model);
+  if (!connectionId || !model) {
+    return jsonError(400, "invalid_quota_failure", "connectionId and model are required");
+  }
+
+  // The bridge secret authenticates this internal-only action. Persisting the
+  // observed terminal quota state lets the native selector skip this account
+  // on this retry and subsequent requests without changing the key's pool.
+  await markAccountUnavailable(connectionId, 429, "insufficient_quota", "codex", model);
+  return NextResponse.json({ ok: true, marked: true });
 }
 
 async function persistResponsesWsCallHistory(body: JsonRecord) {
@@ -601,6 +628,17 @@ export async function POST(request: Request) {
   }
   if (action === "prepare") {
     return prepare(body);
+  }
+  if (action === "report_quota_failure") {
+    try {
+      return await reportQuotaFailure(body);
+    } catch (error) {
+      return jsonError(
+        500,
+        "quota_failure_mark_failed",
+        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
+      );
+    }
   }
   if (action === "log") {
     try {
