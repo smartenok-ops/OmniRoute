@@ -37,7 +37,6 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       promote_latest: ${{ steps.version.outputs.promote_latest }}
-      skip: ${{ steps.version.outputs.skip }}
     env:
       IMAGE_NAME: diegosouzapw/omniroute
     steps:
@@ -49,7 +48,7 @@ jobs:
           # Need full tag history for semver comparison when deciding :latest.
           fetch-depth: 0
 
-      - name: Resolve version, latest-promotion, and skip flag
+      - name: Resolve version and latest-promotion
         id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -109,23 +108,13 @@ jobs:
           fi
           echo "promote_latest=$PROMOTE" >> "$GITHUB_OUTPUT"
 
-          # 3) Skip if this exact version is already published in Docker Hub.
-          #    `main` is always rebuilt (mutable floating tag).
-          SKIP="false"
-          if [ "$VERSION" != "main" ]; then
-            if docker manifest inspect "diegosouzapw/omniroute:${VERSION}" >/dev/null 2>&1; then
-              echo "Image diegosouzapw/omniroute:${VERSION} already exists on Docker Hub — skipping rebuild."
-              SKIP="true"
-            fi
-          fi
-          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
-
-          echo "Publishing diegosouzapw/omniroute:$VERSION (promote_latest=$PROMOTE, skip=$SKIP)"
+          # Always publish the requested version. Docker Hub is optional, while
+          # GHCR is required and may need a repair even if Hub already has a tag.
+          echo "Publishing diegosouzapw/omniroute:$VERSION (promote_latest=$PROMOTE)"
 
   build:
     name: Build Docker (${{ matrix.platform }})
     needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -155,10 +144,19 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
+        id: dockerhub-login
+        # GHCR is the required publication path. Keep Docker Hub publishing when
+        # its credentials are configured, but do not block GHCR on unavailable
+        # Docker Hub secrets or a transient Docker Hub login failure.
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        continue-on-error: true
         uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -176,7 +174,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: |
-            ${{ env.IMAGE_NAME }}
+            ${{ steps.dockerhub-login.outcome == 'success' && env.IMAGE_NAME || '' }}
             ${{ env.GHCR_IMAGE_NAME }}
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: type=gha,scope=docker-${{ matrix.arch }},mode=max
@@ -193,7 +191,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: |
-            ${{ env.IMAGE_NAME }}
+            ${{ steps.dockerhub-login.outcome == 'success' && env.IMAGE_NAME || '' }}
             ${{ env.GHCR_IMAGE_NAME }}
           cache-from: type=gha,scope=docker-web-${{ matrix.arch }}
           cache-to: type=gha,scope=docker-web-${{ matrix.arch }},mode=max
@@ -232,7 +230,6 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -255,10 +252,19 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
+        id: dockerhub-login
+        # GHCR is the required publication path. Keep Docker Hub publishing when
+        # its credentials are configured, but do not block GHCR on unavailable
+        # Docker Hub secrets or a transient Docker Hub login failure.
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        continue-on-error: true
         uses: docker/login-action@v4
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -282,6 +288,7 @@ jobs:
           merge-multiple: true
 
       - name: Create Docker Hub manifest
+        if: steps.dockerhub-login.outcome == 'success'
         run: |
           set -euo pipefail
 
@@ -332,7 +339,7 @@ jobs:
       - name: Inspect image
         if: needs.prepare.outputs.version != 'main'
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
+          docker buildx imagetools inspect "${GHCR_IMAGE_NAME}:${VERSION}"
 
       - name: Generate CycloneDX SBOM (image, advisory)
         if: needs.prepare.outputs.version != 'main'
@@ -398,7 +405,7 @@ jobs:
       - name: Update Docker Hub description
         # Only refresh README/description when we actually promote :latest
         # (avoids overwriting from main pushes or back-fill builds).
-        if: needs.prepare.outputs.promote_latest == 'true'
+        if: needs.prepare.outputs.promote_latest == 'true' && steps.dockerhub-login.outcome == 'success'
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
