@@ -318,6 +318,11 @@ function getAuthHeaders(requestUrl, requestHeaders) {
 
   if (isText(requestHeaders.cookie)) headers.cookie = requestHeaders.cookie;
   if (isText(requestHeaders.origin)) headers.origin = requestHeaders.origin;
+  // Keep the same explicit session signals that the HTTP Codex selector
+  // recognizes. Do not copy arbitrary client headers into the internal bridge.
+  for (const name of ["x-codex-session-id", "x-session-id", "x-omniroute-session"]) {
+    if (isText(requestHeaders[name])) headers[name] = requestHeaders[name];
+  }
   if (isText(requestHeaders["x-forwarded-for"])) {
     headers["x-forwarded-for"] = requestHeaders["x-forwarded-for"];
   }

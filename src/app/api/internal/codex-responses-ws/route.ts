@@ -8,6 +8,7 @@ import { getModelInfo } from "@/sse/services/model";
 import {
   getProviderCredentialsWithQuotaPreflight,
   markAccountUnavailable,
+  extractSessionAffinityKey,
 } from "@/sse/services/auth";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { checkAndRefreshToken } from "@/sse/services/tokenRefresh";
@@ -403,6 +404,11 @@ async function prepare(body: JsonRecord) {
         (value): value is string => typeof value === "string" && value.trim().length > 0
       )
     : [];
+  // Match HTTP Codex selection: explicit Codex/session headers and Responses
+  // conversation metadata form a stable affinity key. The WebSocket's random
+  // logging session id is deliberately not used, because it changes per socket
+  // and cannot preserve a multi-turn conversation across connections.
+  const sessionKey = extractSessionAffinityKey(responseBody, authRequest.headers);
 
   // codex-only bridge: re-resolve bare ChatGPT model ids (the Codex CLI rejects
   // provider-prefixed ids client-side over WebSocket) as codex models.
@@ -423,7 +429,7 @@ async function prepare(body: JsonRecord) {
     null,
     allowedConnections,
     model,
-    { excludeConnectionIds }
+    { excludeConnectionIds, sessionKey }
   );
 
   if (!credentials || "allRateLimited" in credentials) {

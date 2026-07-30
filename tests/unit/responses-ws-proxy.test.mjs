@@ -476,6 +476,109 @@ test("responses ws proxy forwards one terminal quota failure after bounded attem
   await close(server);
 });
 
+test("responses ws proxy retains the client affinity signal and moves its pin after quota failover", async () => {
+  const internalRequests = [];
+  let prepareCount = 0;
+  const server = http.createServer(async (req, res) => {
+    if (
+      new URL(req.url || "/", `http://${req.headers.host}`).pathname !==
+      "/api/internal/codex-responses-ws"
+    ) {
+      res.writeHead(404).end();
+      return;
+    }
+    const body = JSON.parse((await readRequestBody(req)) || "{}");
+    internalRequests.push(body);
+    if (
+      body.action === "authenticate" ||
+      body.action === "report_quota_failure" ||
+      body.action === "log"
+    ) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (body.action === "prepare") {
+      prepareCount += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          upstreamUrl: "wss://test",
+          headers: {},
+          connectionId: `conn_${prepareCount}`,
+          provider: "codex",
+          model: "gpt-5.5",
+          response: { ...body.response, model: "gpt-5.5" },
+        })
+      );
+    }
+  });
+  const first = {
+    send() {
+      queueMicrotask(() =>
+        first.onmessage?.({
+          data: JSON.stringify({
+            type: "response.failed",
+            response: { status: "failed", error: { code: "insufficient_quota" } },
+          }),
+        })
+      );
+    },
+    close() {},
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+  const second = {
+    send() {
+      queueMicrotask(() =>
+        second.onmessage?.({
+          data: JSON.stringify({ type: "response.completed", response: { status: "completed" } }),
+        })
+      );
+    },
+    close() {},
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+  };
+  const port = await listen(server);
+  const proxy = createResponsesWsProxy({
+    baseUrl: `http://127.0.0.1:${port}`,
+    bridgeSecret: "bridge-secret",
+    pingIntervalMs: 1000,
+    idleTimeoutMs: 10000,
+    wsFactory: async () => (prepareCount === 1 ? first : second),
+  });
+  server.on("upgrade", async (req, socket, head) => {
+    if (!(await proxy.handleUpgrade(req, socket, head)) && !socket.destroyed) socket.destroy();
+  });
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/responses?api_key=local-token`);
+  const messages = [];
+  ws.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data))));
+  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
+  ws.send(
+    JSON.stringify({
+      type: "response.create",
+      model: "gpt-5.5",
+      input: "hello",
+      metadata: { session_id: "cockpit-turn-7" },
+    })
+  );
+  await waitFor(() => messages.some((message) => message.type === "response.completed"));
+
+  const prepares = internalRequests.filter((entry) => entry.action === "prepare");
+  assert.equal(prepares.length, 2);
+  assert.equal(prepares[0].response.metadata.session_id, "cockpit-turn-7");
+  assert.equal(prepares[1].response.metadata.session_id, "cockpit-turn-7");
+  assert.deepEqual(prepares[0].excludeConnectionIds, []);
+  assert.deepEqual(prepares[1].excludeConnectionIds, ["conn_1"]);
+
+  ws.close();
+  await close(server);
+});
+
 test("responses ws proxy serializes client frames while upstream prepare is pending", async () => {
   const internalRequests = [];
   const upstreamSends = [];
