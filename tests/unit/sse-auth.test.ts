@@ -166,6 +166,51 @@ test("codex session account affinity is opt-in and honors TTL", async () => {
   );
 });
 
+test("codex affinity rebinds to an eligible account when a quota retry excludes its pin", async () => {
+  const affinityDb = await import("../../src/lib/db/sessionAccountAffinity.ts");
+  await settingsDb.updateSettings({
+    fallbackStrategy: "least-used",
+    codexSessionAffinityTtlMs: 60_000,
+  });
+  const first = await seedConnection("codex", { name: "codex-ws-affinity-first", priority: 1 });
+  const second = await seedConnection("codex", { name: "codex-ws-affinity-second", priority: 2 });
+  const sessionKey = "metadata:cockpit-turn-7";
+
+  const initial = await auth.getProviderCredentialsWithQuotaPreflight(
+    "codex",
+    null,
+    [first.id, second.id],
+    "gpt-5.5",
+    { sessionKey }
+  );
+  assert.equal(initial.connectionId, first.id);
+  const sticky = await auth.getProviderCredentialsWithQuotaPreflight(
+    "codex",
+    null,
+    [first.id, second.id],
+    "gpt-5.5",
+    { sessionKey }
+  );
+  assert.equal(sticky.connectionId, first.id, "ordinary multi-turn selection remains sticky");
+
+  const retry = await auth.getProviderCredentialsWithQuotaPreflight(
+    "codex",
+    null,
+    [first.id, second.id],
+    "gpt-5.5",
+    {
+      sessionKey,
+      excludeConnectionIds: [first.id],
+    }
+  );
+  assert.equal(retry.connectionId, second.id, "retry exclusion must override the old affinity pin");
+  assert.equal(
+    affinityDb.getSessionAccountAffinity(sessionKey, "codex", 60_000)?.connectionId,
+    second.id,
+    "the replacement account becomes the session affinity target"
+  );
+});
+
 test("session account affinity expires when TTL has passed", async () => {
   const affinityDb = await import("../../src/lib/db/sessionAccountAffinity.ts");
   const now = Date.now();

@@ -31,6 +31,7 @@ const WS_QUERY_TOKEN_KEYS = ["api_key", "token", "access_token"];
 const textDecoder = new TextDecoder();
 const DEFAULT_MAX_WS_BUFFER_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_WS_MESSAGE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_QUOTA_FAILOVER_ATTEMPTS = 3;
 
 class WebSocketInputTooLargeError extends Error {
   constructor(message, reason = "message_too_large") {
@@ -109,7 +110,7 @@ function getResponseErrorStatus(error) {
     error.status,
     error.status_code,
     error.statusCode,
-    error.code === "usage_limit_reached" ? 429 : null,
+    error.code === "usage_limit_reached" || error.code === "insufficient_quota" ? 429 : null,
   ];
   for (const candidate of candidates) {
     const status = Number(candidate);
@@ -155,6 +156,12 @@ function getTerminalResponseEvent(rawData) {
   }
 
   return null;
+}
+
+function isInsufficientQuotaTerminal(terminalEvent) {
+  if (!terminalEvent || terminalEvent.success) return false;
+  const code = String(terminalEvent.errorCode || "").toLowerCase();
+  return code === "insufficient_quota" || code === "usage_limit_reached";
 }
 
 export function isResponsesWsPath(pathname) {
@@ -311,6 +318,11 @@ function getAuthHeaders(requestUrl, requestHeaders) {
 
   if (isText(requestHeaders.cookie)) headers.cookie = requestHeaders.cookie;
   if (isText(requestHeaders.origin)) headers.origin = requestHeaders.origin;
+  // Keep the same explicit session signals that the HTTP Codex selector
+  // recognizes. Do not copy arbitrary client headers into the internal bridge.
+  for (const name of ["x-codex-session-id", "x-session-id", "x-omniroute-session"]) {
+    if (isText(requestHeaders[name])) headers[name] = requestHeaders[name];
+  }
   if (isText(requestHeaders["x-forwarded-for"])) {
     headers["x-forwarded-for"] = requestHeaders["x-forwarded-for"];
   }
@@ -391,6 +403,7 @@ class ResponsesWsSession {
     idleTimeoutMs,
     maxBufferBytes,
     maxMessageBytes,
+    maxQuotaFailoverAttempts,
   }) {
     this.baseUrl = baseUrl;
     this.bridgeSecret = bridgeSecret;
@@ -403,6 +416,10 @@ class ResponsesWsSession {
     this.idleTimeoutMs = idleTimeoutMs;
     this.maxBufferBytes = normalizePositiveInteger(maxBufferBytes, DEFAULT_MAX_WS_BUFFER_BYTES);
     this.maxMessageBytes = normalizePositiveInteger(maxMessageBytes, DEFAULT_MAX_WS_MESSAGE_BYTES);
+    this.maxQuotaFailoverAttempts = normalizePositiveInteger(
+      maxQuotaFailoverAttempts,
+      DEFAULT_MAX_QUOTA_FAILOVER_ATTEMPTS
+    );
     this.sessionId = randomUUID();
     this.startedAt = Date.now();
     this.closed = false;
@@ -416,6 +433,8 @@ class ResponsesWsSession {
     this.firstResponseBody = null;
     this.preparedContext = null;
     this.historyLogged = false;
+    this.quotaFailoverConnectionIds = [];
+    this.upstreamUserVisible = false;
     this.lastSeenAt = Date.now();
 
     this.pingTimer = setInterval(() => {
@@ -588,6 +607,7 @@ class ResponsesWsSession {
           headers: getAuthHeaders(this.requestUrl, this.requestHeaders),
           message: firstMessage,
           response: responseBody,
+          excludeConnectionIds: this.quotaFailoverConnectionIds,
         }
       );
 
@@ -614,6 +634,9 @@ class ResponsesWsSession {
         serviceTier:
           toStringOrNull(responseBody.service_tier) || toStringOrNull(responseBody.serviceTier),
       };
+      if (this.preparedContext.connectionId) {
+        this.quotaFailoverConnectionIds.push(this.preparedContext.connectionId);
+      }
 
       const wsOptions = {
         // #5591: chrome_149 is not a wreq-js 2.3.1 profile (max chrome_147); the
@@ -632,9 +655,19 @@ class ResponsesWsSession {
         const data =
           typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8");
         const terminalEvent = getTerminalResponseEvent(data);
+        if (
+          terminalEvent &&
+          isInsufficientQuotaTerminal(terminalEvent) &&
+          !this.upstreamUserVisible &&
+          this.quotaFailoverConnectionIds.length < this.maxQuotaFailoverAttempts
+        ) {
+          void this.retryAfterQuotaFailure(upstream);
+          return;
+        }
         if (terminalEvent) {
           void this.persistHistory(terminalEvent);
         }
+        this.upstreamUserVisible = true;
         this.sendFrame(0x1, Buffer.from(data, "utf8"));
       };
       upstream.onerror = (event) => {
@@ -650,7 +683,7 @@ class ResponsesWsSession {
         });
       };
       upstream.onclose = (event) => {
-        if (this.closed) return;
+        if (this.closed || upstream !== this.upstream) return;
         void this.persistHistory({
           status: event.code === 1000 ? 499 : 502,
           success: false,
@@ -672,6 +705,48 @@ class ResponsesWsSession {
     })();
 
     return this.upstreamReady;
+  }
+
+  async retryAfterQuotaFailure(upstream) {
+    if (this.closed || upstream !== this.upstream || !this.firstResponseBody) return;
+    this.upstream = null;
+    try {
+      upstream.onmessage = null;
+      upstream.onerror = null;
+      upstream.onclose = null;
+      upstream.close?.(1000, "quota_failover");
+    } catch {
+      // The failed upstream is no longer used; a close race must not block failover.
+    }
+
+    const failedConnectionId = this.quotaFailoverConnectionIds.at(-1);
+    if (failedConnectionId) {
+      await callInternal(this.fetchImpl, this.baseUrl, this.bridgeSecret, "report_quota_failure", {
+        connectionId: failedConnectionId,
+        model: this.preparedContext?.model || this.firstResponseBody.model,
+      }).catch(() => null);
+    }
+
+    this.upstreamReady = null;
+    try {
+      const { upstream: replacement, firstMessage } = await this.ensureUpstream({
+        type: "response.create",
+        ...this.firstResponseBody,
+      });
+      replacement.send(jsonStringifySafe(firstMessage));
+    } catch (error) {
+      const code = error?.code || "codex_quota_failover_failed";
+      const message = error instanceof Error ? error.message : String(error);
+      const failurePayload = this.sendFailure(code, message);
+      void this.persistHistory({
+        status: Number.isInteger(error?.status) ? error.status : 503,
+        success: false,
+        errorCode: code,
+        errorMessage: message,
+        terminalMessage: failurePayload,
+      });
+      this.close(1011, "quota_failover_failed");
+    }
   }
 
   async forwardClientMessage(message) {
@@ -784,6 +859,7 @@ export function createResponsesWsProxy({
   idleTimeoutMs = 90000,
   maxBufferBytes = DEFAULT_MAX_WS_BUFFER_BYTES,
   maxMessageBytes = DEFAULT_MAX_WS_MESSAGE_BYTES,
+  maxQuotaFailoverAttempts = DEFAULT_MAX_QUOTA_FAILOVER_ATTEMPTS,
 } = {}) {
   if (!isText(baseUrl)) {
     throw new Error("createResponsesWsProxy requires a baseUrl");
@@ -887,6 +963,7 @@ export function createResponsesWsProxy({
           idleTimeoutMs,
           maxBufferBytes,
           maxMessageBytes,
+          maxQuotaFailoverAttempts,
         });
         return true;
       } catch (error) {
