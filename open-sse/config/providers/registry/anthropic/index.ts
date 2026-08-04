@@ -17,6 +17,14 @@ export const anthropicProvider: RegistryEntry = {
   },
   models: [
     {
+      id: "claude-opus-5",
+      name: "Claude Opus 5",
+      contextLength: 1048576,
+      // Opus 5 rejects non-default temperature/top_p/top_k with a 400 (sampling fixed;
+      // reasoning via output_config.effort). Mirrors the dashed `claude` registry ids.
+      unsupportedParams: ["temperature", "top_p", "top_k"],
+    },
+    {
       id: "claude-opus-4.7",
       name: "Claude Opus 4.7",
       // Opus 4.7+ rejects non-default temperature/top_p/top_k with a 400 (sampling fixed;

@@ -29,6 +29,15 @@ export const claudeProvider: RegistryEntry = {
   },
   models: [
     {
+      id: "claude-opus-5",
+      name: "Claude Opus 5",
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
+      // Opus 5 / Opus 4.7+ / Fable 5 reject non-default temperature/top_p/top_k with a 400
+      // (sampling is fixed; reasoning is steered by output_config.effort). Strip them before dispatch.
+      unsupportedParams: ["temperature", "top_p", "top_k"],
+    },
+    {
       id: "claude-fable-5",
       name: "Claude Fable 5",
       contextLength: 1000000,

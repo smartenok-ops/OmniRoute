@@ -12,6 +12,13 @@ import {
 
 export const DEFAULT_PRICING_OAUTH = {
   cc: {
+    "claude-opus-5": {
+      input: 10.0,
+      output: 50.0,
+      cached: 1.0,
+      reasoning: 50.0,
+      cache_creation: 12.5,
+    },
     "claude-fable-5": {
       input: 10.0,
       output: 50.0,
@@ -468,6 +475,13 @@ export const DEFAULT_PRICING_OAUTH = {
     },
   },
   kiro: {
+    "claude-opus-5": {
+      input: 15.0,
+      output: 75.0,
+      cached: 7.5,
+      reasoning: 112.5,
+      cache_creation: 15.0,
+    },
     "claude-fable-5": {
       input: 15.0,
       output: 75.0,
